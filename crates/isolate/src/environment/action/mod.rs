@@ -483,33 +483,22 @@ impl<RT: Runtime, S: ActionInnerProvider<RT>> ActionEnvironment<RT, S> {
                 // succeeded, so usage tracking reports the parameterized route
                 // pattern instead of the raw URL path.
                 let route = result.as_ref().ok().and_then(|(route, _)| route.clone());
-                if !self.provider.http_response_has_started()? {
-                    result = Ok((route, HttpActionResult::Error(e)));
-                } else {
-                    self.provider.handle_http_streamed_part(Err(e))?;
-                    result = Ok((route, HttpActionResult::Streamed))
-                }
+                result = http_action_failed(&mut self.provider, e).map(|result| (route, result));
             },
             Err(e) => {
                 result = Err(e);
             },
         }
-        let user_execution_time = execution_time.elapsed;
-        self.provider.add_http_response_size_warning()?;
         let dangling_task_counts = self.dangling_task_counts();
-        add_warnings_to_log_lines(&mut self.provider, dangling_task_counts, execution_time)?;
-        let (route, result) = result?;
-        let outcome = HttpActionOutcome::new(
-            route,
+        finish_http_action(
+            self.provider,
+            dangling_task_counts,
+            &http_module_path,
             request_head,
-            self.provider.identity().clone().into(),
             start_unix_timestamp,
+            execution_time,
             result,
-            Some(self.provider.syscall_trace()),
-            http_module_path.npm_version().clone(),
-            user_execution_time,
-        );
-        Ok(self.provider.into_http_outcome(outcome))
+        )
     }
 
     #[fastrace::trace]
@@ -1262,6 +1251,43 @@ pub fn finish_action<RT: Runtime, S: ActionInnerProvider<RT>>(
         user_execution_time: Some(user_execution_time),
     };
     Ok(provider.into_outcome(outcome))
+}
+
+pub fn http_action_failed<RT: Runtime, S: ActionInnerProvider<RT>>(
+    provider: &mut S,
+    error: JsError,
+) -> anyhow::Result<HttpActionResult> {
+    if !provider.http_response_has_started()? {
+        return Ok(HttpActionResult::Error(error));
+    }
+    provider.handle_http_streamed_part(Err(error))?;
+    Ok(HttpActionResult::Streamed)
+}
+
+pub fn finish_http_action<RT: Runtime, S: ActionInnerProvider<RT>>(
+    mut provider: S,
+    dangling_task_counts: BTreeMap<String, usize>,
+    http_module_path: &ValidatedHttpPath,
+    request_head: HttpActionRequestHead,
+    start_unix_timestamp: UnixTimestamp,
+    execution_time: FunctionExecutionTime,
+    result: anyhow::Result<(Option<HttpActionRoute>, HttpActionResult)>,
+) -> anyhow::Result<S::HttpOutcome> {
+    let user_execution_time = execution_time.elapsed;
+    provider.add_http_response_size_warning()?;
+    add_warnings_to_log_lines(&mut provider, dangling_task_counts, execution_time)?;
+    let (route, result) = result?;
+    let outcome = HttpActionOutcome::new(
+        route,
+        request_head,
+        provider.identity().clone().into(),
+        start_unix_timestamp,
+        result,
+        Some(provider.syscall_trace()),
+        http_module_path.npm_version().clone(),
+        user_execution_time,
+    );
+    Ok(provider.into_http_outcome(outcome))
 }
 
 fn add_warnings_to_log_lines_action<RT: Runtime, S: ActionInnerProvider<RT>>(
