@@ -271,7 +271,7 @@ pub(crate) struct ReplicaWriter<RT: Runtime> {
     stopped: AtomicBool,
     queue: mpsc::Sender<ReplayQueueMessage<RT>>,
     pub(super) settings: Settings,
-    /// Held by sampled scans from sampling through outcome logging.
+    /// Held by sampled reads from sampling through outcome logging.
     pub(super) comparison_permits: Arc<Semaphore>,
     /// Held only while a comparison reads V6.
     pub(super) replica_read_permits: Semaphore,

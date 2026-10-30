@@ -74,14 +74,23 @@ pub(crate) fn log_marker_read_failure(cluster_name: &str) {
 
 register_convex_counter!(
     MYSQL_V6_REPLICA_COMPARISONS_TOTAL,
-    "Sampled V5 index scans by comparison outcome against the V6 replica",
-    &["cluster_name", "outcome"]
+    "Sampled V5 reads by kind and comparison outcome against the V6 replica",
+    &["cluster_name", "read", "outcome"]
 );
+/// Reads re-run on the replica for comparison.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::IntoStaticStr, strum::EnumIter)]
+#[strum(serialize_all = "snake_case")]
+pub(crate) enum ComparedRead {
+    IndexScan,
+    PreviousRevisions,
+    RevisionPairs,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::IntoStaticStr, strum::EnumIter)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ComparisonOutcome {
     Sampled,
-    /// Comparison requires an active replica and a persistence index ID.
+    /// Comparison requires an active replica and, for index scans, a
+    /// persistence index ID.
     Ineligible,
     /// No capture slot when sampled, or no replica read slot before the
     /// comparison's `apply_wait` deadline.
@@ -98,9 +107,9 @@ pub(crate) enum ComparisonOutcome {
     Mismatch,
     Match,
 }
-pub(crate) fn log_comparison(cluster_name: &str, outcome: ComparisonOutcome) {
+pub(crate) fn log_comparison(cluster_name: &str, read: ComparedRead, outcome: ComparisonOutcome) {
     MYSQL_V6_REPLICA_COMPARISONS_TOTAL
-        .with_label_values(&[cluster_name, outcome.into()])
+        .with_label_values(&[cluster_name, read.into(), outcome.into()])
         .inc();
 }
 
@@ -184,10 +193,12 @@ pub(crate) fn initialize(cluster_name: &str) {
             .with_label_values(&[cluster_name, reason.into()])
             .inc_by(0);
     }
-    for outcome in ComparisonOutcome::iter() {
-        MYSQL_V6_REPLICA_COMPARISONS_TOTAL
-            .with_label_values(&[cluster_name, outcome.into()])
-            .inc_by(0);
+    for read in ComparedRead::iter() {
+        for outcome in ComparisonOutcome::iter() {
+            MYSQL_V6_REPLICA_COMPARISONS_TOTAL
+                .with_label_values(&[cluster_name, read.into(), outcome.into()])
+                .inc_by(0);
+        }
     }
     MYSQL_V6_REPLICA_MARKER_READ_FAILURES_TOTAL
         .with_label_values(&[cluster_name])

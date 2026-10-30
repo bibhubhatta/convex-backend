@@ -43,20 +43,23 @@ pub(super) struct Settings {
     /// conductor within seconds of the new one taking the lease; a deployment
     /// move waits for the source conductor's next reconcile, up to a minute.
     pub(super) handoff_grace: Duration,
-    /// Fraction of V5 index scans selected before eligibility checks.
+    /// Fraction of V5 reads selected before eligibility checks.
     pub(super) comparison_sample_rate: f64,
+    /// Entries captured per sampled read; a longer source result compares as a
+    /// prefix.
     pub(super) max_comparison_entries: usize,
-    /// Sampled scans capturing entries or awaiting a verdict; bounds capture
-    /// memory. Scans sampled beyond it are dropped.
+    /// Sampled reads capturing entries or awaiting a verdict; bounds capture
+    /// memory. Reads sampled beyond it are dropped.
     pub(super) max_concurrent_comparisons: usize,
-    /// V6 index scans in flight for comparisons. A comparison waits for a slot
-    /// until its `apply_wait` deadline, which the replay barrier shares, then
-    /// is dropped.
+    /// V6 reads in flight for comparisons. A comparison waits for a slot until
+    /// its `apply_wait` deadline, which the replay barrier shares, then is
+    /// dropped.
     pub(super) max_concurrent_replica_reads: usize,
 }
 
-/// Fraction of V5 index scans compared against the V6 replica, settable per
-/// conductor. Values outside `0..=1` compare every scan.
+/// Fraction of V5 reads (index scans, previous revisions, revision pairs)
+/// compared against the V6 replica, settable per conductor. Values outside
+/// `0..=1` compare every read.
 pub(super) static MYSQL_V6_REPLICA_COMPARE_SAMPLE_RATE: LazyLock<f64> = LazyLock::new(|| {
     let rate: f64 = env_config("MYSQL_V6_REPLICA_COMPARE_SAMPLE_RATE", 1.0);
     if rate.is_finite() && (0.0..=1.0).contains(&rate) {
@@ -67,9 +70,9 @@ pub(super) static MYSQL_V6_REPLICA_COMPARE_SAMPLE_RATE: LazyLock<f64> = LazyLock
     }
 });
 
-/// V6 index scans in flight for comparisons per deployment, settable per
-/// conductor. Zero makes every comparison wait out its deadline and drop; use
-/// the sample rate to turn comparisons off.
+/// V6 reads in flight for comparisons per deployment, settable per conductor.
+/// Zero makes every comparison wait out its deadline and drop; use the sample
+/// rate to turn comparisons off.
 pub(super) static MYSQL_V6_REPLICA_MAX_CONCURRENT_REPLICA_READS: LazyLock<usize> =
     LazyLock::new(|| env_config("MYSQL_V6_REPLICA_MAX_CONCURRENT_REPLICA_READS", 8));
 
