@@ -1,5 +1,6 @@
-//! Index scans with document joins scoped by deployment ID or instance name.
+//! Index scans with document reads scoped by deployment ID or instance name.
 use std::{
+    collections::HashMap,
     ops::Bound,
     sync::Arc,
 };
@@ -13,11 +14,14 @@ use common::{
     },
     interval::Interval,
     knobs::{
+        MYSQL_INDEX_SCAN_CONCURRENCY,
+        MYSQL_INDEX_SCAN_MIN_ROWS_PER_WORKER,
         MYSQL_MAX_QUERY_BATCH_SIZE,
         MYSQL_MAX_QUERY_DYNAMIC_BATCH_SIZE,
         MYSQL_MIN_QUERY_BATCH_SIZE,
     },
     persistence::{
+        DocumentLogEntry,
         LatestDocument,
         RetentionValidator,
     },
@@ -28,26 +32,37 @@ use common::{
         Timestamp,
     },
     value::{
+        InternalDocumentId,
         InternalId,
         TabletId,
     },
 };
 use errors::ErrorMetadata;
-use futures::Stream;
+use futures::{
+    stream,
+    Stream,
+    StreamExt,
+    TryStreamExt,
+};
 use futures_async_stream::try_stream_block;
 use mysql_async::Value;
 
 use super::{
     column,
-    persistence::PublishedBucketBounds,
+    persistence::{
+        fetch_document_revisions,
+        PublishedBucketBounds,
+    },
     sql::{
         self,
+        IndexQueryType,
         LogBucket,
         LogBucketBounds,
     },
     PersistenceDeploymentId,
 };
 use crate::{
+    chunks::smart_chunks,
     connection::is_no_such_table_error,
     document_encoding,
     metrics,
@@ -127,6 +142,12 @@ impl<'a, RT: Runtime> IndexReader<'a, RT> {
             let mut buffered = Vec::new();
             let mut refreshed = false;
             loop {
+                let concurrency = index_scan_concurrency(page_size);
+                let query_type = if concurrency > 1 {
+                    IndexQueryType::IndexOnly
+                } else {
+                    IndexQueryType::JoinDocuments
+                };
                 let mut connection = self.pool.acquire("v6_index_scan", self.db_name).await?;
                 let buckets = self.published.load()?.covering(snapshot_bucket);
                 let prepare_timer =
@@ -141,6 +162,7 @@ impl<'a, RT: Runtime> IndexReader<'a, RT> {
                     page_size,
                     &buckets,
                     &self.documents,
+                    query_type,
                 );
                 prepare_timer.finish();
                 let execute_timer =
@@ -219,6 +241,23 @@ impl<'a, RT: Runtime> IndexReader<'a, RT> {
                     .validate_snapshot(read_timestamp)
                     .await?;
                 retention_validate_timer.finish();
+                let documents = match query_type {
+                    IndexQueryType::JoinDocuments => None,
+                    IndexQueryType::IndexOnly => {
+                        let execute_timer =
+                            metrics::query_index_sql_execute_timer(self.pool.cluster_name());
+                        let documents =
+                            self.fetch_documents(&rows, concurrency, &mut stats).await?;
+                        execute_timer.finish();
+                        let retention_validate_timer =
+                            metrics::retention_validate_timer(self.pool.cluster_name());
+                        retention_validator
+                            .validate_snapshot(read_timestamp)
+                            .await?;
+                        retention_validate_timer.finish();
+                        Some(documents)
+                    },
+                };
                 let rows_loaded = rows.len();
                 let mut cursor = None;
                 for row in rows {
@@ -258,23 +297,58 @@ impl<'a, RT: Runtime> IndexReader<'a, RT> {
                     let ts = Timestamp::try_from(ts)?;
                     let table_id = TabletId(InternalId::try_from(column::bytes(&row, 5)?)?);
                     anyhow::ensure!(table_id == tablet_id);
-                    let encoded = column::maybe_bytes(&row, 7)?
-                        .context(DanglingIndexReference)
-                        .with_context(|| format!("Dangling index reference for {key:?} {ts:?}"))?;
-                    let document = document_encoding::decode(encoded, table_id)?
-                        .context(DanglingIndexReference)
-                        .with_context(|| {
-                            format!("Index reference to deleted document {key:?} {ts:?}")
-                        })?;
-                    let prev_ts: Option<i64> = row.get_opt(8).context("row[8]")??;
-                    buffered.push((
-                        key,
-                        LatestDocument {
-                            ts,
-                            value: document,
-                            prev_ts: prev_ts.map(Timestamp::try_from).transpose()?,
+                    let document = match query_type {
+                        IndexQueryType::IndexOnly => {
+                            let documents = documents
+                                .as_ref()
+                                .context("Index-only page requires separately fetched documents")?;
+                            let id = InternalDocumentId::new(
+                                table_id,
+                                InternalId::try_from(column::bytes(&row, 6)?)?,
+                            );
+                            let entry = documents
+                                .get(&(id, ts))
+                                .context(DanglingIndexReference)
+                                .with_context(|| {
+                                    format!("Dangling index reference for {key:?} {ts:?}")
+                                })?;
+                            let value = entry
+                                .value
+                                .clone()
+                                .context(DanglingIndexReference)
+                                .with_context(|| {
+                                    format!("Index reference to deleted document {key:?} {ts:?}")
+                                })?;
+                            LatestDocument {
+                                ts,
+                                value,
+                                prev_ts: entry.prev_ts,
+                            }
                         },
-                    ));
+                        IndexQueryType::JoinDocuments => {
+                            anyhow::ensure!(
+                                documents.is_none(),
+                                "Unexpected separately fetched documents for joined index query"
+                            );
+                            let encoded = column::maybe_bytes(&row, 7)?
+                                .context(DanglingIndexReference)
+                                .with_context(|| {
+                                    format!("Dangling index reference for {key:?} {ts:?}")
+                                })?;
+                            let value = document_encoding::decode(encoded, table_id)?
+                                .context(DanglingIndexReference)
+                                .with_context(|| {
+                                    format!("Index reference to deleted document {key:?} {ts:?}")
+                                })?;
+                            let prev_ts: Option<i64> = row.get_opt(8).context("row[8]")??;
+                            LatestDocument {
+                                ts,
+                                value,
+                                prev_ts: prev_ts.map(Timestamp::try_from).transpose()?,
+                            }
+                        },
+                    };
+                    buffered.push((key, document));
                     stats.rows_returned += 1;
                     stats.max_rows_buffered = stats.max_rows_buffered.max(buffered.len());
                     if complete_key {
@@ -306,6 +380,55 @@ impl<'a, RT: Runtime> IndexReader<'a, RT> {
             }
         })
     }
+
+    async fn fetch_documents(
+        &self,
+        rows: &[mysql_async::Row],
+        concurrency: usize,
+        stats: &mut metrics::QueryIndexStats<'_>,
+    ) -> anyhow::Result<HashMap<(InternalDocumentId, Timestamp), DocumentLogEntry>> {
+        let pointers = rows
+            .iter()
+            .map(|row| {
+                let table = TabletId(InternalId::try_from(column::bytes(row, 5)?)?);
+                let id = InternalId::try_from(column::bytes(row, 6)?)?;
+                let ts = Timestamp::try_from(row.get_opt::<i64, _>(4).context("row[4]")??)?;
+                anyhow::Ok((InternalDocumentId::new(table, id), ts))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let queries: Vec<_> = smart_chunks(&pointers)
+            .map(|chunk| {
+                fetch_document_revisions(
+                    self.pool,
+                    self.db_name,
+                    self.deployment_id,
+                    &self.documents,
+                    chunk,
+                )
+            })
+            .collect();
+        stats.sql_statements += queries.len();
+        let results: Vec<_> = stream::iter(queries)
+            .buffer_unordered(concurrency)
+            .try_collect()
+            .await?;
+        // Exact-revision SQL can reorder and deduplicate pointers. The captured
+        // index page preserves their scan order, even if log buckets are dropped.
+        Ok(results
+            .into_iter()
+            .flatten()
+            .map(|entry| ((entry.id, entry.ts), entry))
+            .collect())
+    }
+}
+
+/// Parallel fetching adds a database round trip, so each worker needs enough
+/// documents to amortize that latency. Small pages use the JOIN.
+fn index_scan_concurrency(page_size: usize) -> usize {
+    (*MYSQL_INDEX_SCAN_CONCURRENCY)
+        .get()
+        .min(page_size / (*MYSQL_INDEX_SCAN_MIN_ROWS_PER_WORKER).get())
+        .max(1)
 }
 
 fn out_of_retention_error(read_timestamp: Timestamp, reason: String) -> anyhow::Error {

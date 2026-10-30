@@ -1233,6 +1233,24 @@ pub static MYSQL_MIN_QUERY_BATCH_SIZE: LazyLock<usize> =
 pub static MYSQL_MAX_QUERY_BATCH_SIZE: LazyLock<usize> =
     LazyLock::new(|| env_config("MYSQL_MAX_QUERY_BATCH_SIZE", 5000));
 
+/// Maximum parallel document fetches per V6 index scan batch. A value of one
+/// uses the index-to-documents JOIN.
+pub static MYSQL_INDEX_SCAN_CONCURRENCY: LazyLock<NonZeroUsize> = LazyLock::new(|| {
+    env_config(
+        "MYSQL_INDEX_SCAN_CONCURRENCY",
+        NonZeroUsize::new(8).unwrap(),
+    )
+});
+
+/// Minimum V6 index batch size per worker to justify the extra document-fetch
+/// round trip. Smaller batches use the index-to-documents JOIN.
+pub static MYSQL_INDEX_SCAN_MIN_ROWS_PER_WORKER: LazyLock<NonZeroUsize> = LazyLock::new(|| {
+    env_config(
+        "MYSQL_INDEX_SCAN_MIN_ROWS_PER_WORKER",
+        NonZeroUsize::new(512).unwrap(),
+    )
+});
+
 /// We dynamically increase the batch size up to this threshold if client keeps
 /// fetching more results. This helps correct for tombstones, long prefixes and
 /// wrong client size estimates.

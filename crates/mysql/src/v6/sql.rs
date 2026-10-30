@@ -539,6 +539,14 @@ fn union_arms(
     (arms.join("\nUNION ALL\n"), params)
 }
 
+/// Joining documents saves a round trip for small reads. Index-only pages
+/// enable parallel document fetches for larger scans.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum IndexQueryType {
+    JoinDocuments,
+    IndexOnly,
+}
+
 /// Builds the V6 range query over `indexes_latest` and the supplied log
 /// buckets; each key has one revision visible at a snapshot across the tables,
 /// so the union is duplicate-free. Rows are ordered by `key_suffix_hash`, which
@@ -561,6 +569,7 @@ pub(crate) fn index_query(
     batch_size: usize,
     log_buckets: &[LogBucket],
     documents: &DocumentScope,
+    query_type: IndexQueryType,
 ) -> (String, Vec<Value>) {
     let order = match order {
         Order::Asc => "ASC",
@@ -592,19 +601,27 @@ LIMIT {batch_size})"#
             )
         },
     );
-    let document_join = match documents {
-        DocumentScope::DeploymentId => Cow::Borrowed(DOCUMENT_JOIN),
-        DocumentScope::InstanceName(instance) => {
-            params.push(instance.clone().into());
-            Cow::Owned(
-                DOCUMENT_JOIN.replace("D.deployment_id = U.deployment_id", "D.instance_name = ?"),
-            )
+    let (document_columns, document_join) = match query_type {
+        IndexQueryType::JoinDocuments => {
+            let join = match documents {
+                DocumentScope::DeploymentId => Cow::Borrowed(DOCUMENT_JOIN),
+                DocumentScope::InstanceName(instance) => {
+                    params.push(instance.clone().into());
+                    Cow::Owned(
+                        DOCUMENT_JOIN
+                            .replace("D.deployment_id = U.deployment_id", "D.instance_name = ?"),
+                    )
+                },
+            };
+            ("D.json_value, D.prev_ts", join)
         },
+        // Keep the maintenance-state column positions shared by both query paths.
+        IndexQueryType::IndexOnly => ("NULL AS json_value, NULL AS prev_ts", Cow::Borrowed("")),
     };
     (
         format!(
             r#"
-SELECT U.index_id, U.key_prefix, U.key_suffix_hash, U.key_suffix, U.ts, U.table_id, U.document_id, D.json_value, D.prev_ts, S.created_through_ts, S.oldest_kept_ts
+SELECT U.index_id, U.key_prefix, U.key_suffix_hash, U.key_suffix, U.ts, U.table_id, U.document_id, {document_columns}, S.created_through_ts, S.oldest_kept_ts
 FROM @db_name.indexes_maintenance_state S
 LEFT JOIN (
 {arms}

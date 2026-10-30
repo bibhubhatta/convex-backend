@@ -85,6 +85,7 @@ use super::{
         self,
         IndexEngine,
     },
+    reader::DocumentScope,
     sql::{
         self,
         LogBucketBounds,
@@ -906,7 +907,7 @@ impl<RT: Runtime> PersistenceReader for Reader<RT> {
             }
             let rows = connection
                 .query_collect(
-                    &documents::exact_revision_chunk(chunk.len()),
+                    &documents::exact_revision_chunk(chunk.len(), &DocumentScope::DeploymentId),
                     params,
                     chunk.len(),
                     |row| row_to_document(&row),
@@ -1151,6 +1152,28 @@ fn deployment_id_from_options(
         "MySQL V6 is only supported by the multitenant V6 driver"
     );
     deployment_id.try_into()
+}
+
+pub(super) async fn fetch_document_revisions<RT: Runtime>(
+    pool: &ConvexMySqlPool<RT>,
+    db_name: &str,
+    deployment_id: PersistenceDeploymentId,
+    scope: &DocumentScope,
+    revisions: &[(InternalDocumentId, Timestamp)],
+) -> anyhow::Result<Vec<DocumentLogEntry>> {
+    let mut params = vec![scope.tenant_value(deployment_id)];
+    for &(id, ts) in revisions {
+        params.extend([
+            Value::Bytes(id.table().0.into()),
+            Value::Bytes(id.internal_id().into()),
+            Value::Int(i64::from(ts)),
+        ]);
+    }
+    let query = documents::exact_revision_chunk(revisions.len(), scope);
+    let mut connection = pool.acquire("v6_index_scan_documents", db_name).await?;
+    connection
+        .query_collect(&query, params, revisions.len(), |row| row_to_document(&row))
+        .await
 }
 
 fn row_to_document(row: &Row) -> anyhow::Result<DocumentLogEntry> {
