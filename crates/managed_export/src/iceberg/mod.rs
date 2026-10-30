@@ -35,11 +35,8 @@ use strum::{
 };
 use value::ConvexObject;
 
-#[path = "columns.rs"]
 pub mod columns;
-#[path = "json.rs"]
 mod json;
-#[path = "iceberg_writer.rs"]
 mod writer;
 pub use writer::{
     IcebergChangeWriter,
