@@ -7,6 +7,15 @@ license = "LicenseRef-FSL-1.1-Apache-2.0"
 [lib]
 doctest = false
 
+[features]
+testing = [
+    "common/testing",
+    "dep:futures",
+    "errors/testing",
+    "iceberg-storage-opendal/opendal-memory",
+    "value/testing",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 arrow_iceberg = { package = "arrow-array", version = "58" }
@@ -19,6 +28,7 @@ aws-sdk-s3 = { workspace = true }
 common = { workspace = true }
 errors = { workspace = true }
 fastrace = { workspace = true }
+futures = { workspace = true, optional = true }
 iceberg = "=0.10.1"
 iceberg-storage-opendal = { version = "=0.10.1", default-features = false, features = ["opendal-s3"] }
 parquet_iceberg = { package = "parquet", version = "58", default-features = false }

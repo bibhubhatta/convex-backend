@@ -66,12 +66,7 @@ async fn staged(
     .await
 }
 
-async fn clear_registrations(catalog: &dyn Catalog, namespace: &NamespaceIdent) -> Result<()> {
-    for ident in catalog.list_tables(namespace).await? {
-        catalog.drop_table(&ident).await?;
-    }
-    Ok(())
-}
+use super::super::testing::clear_registrations;
 
 async fn changes(writer: &IcebergChangeWriter, table: &str) -> Result<Vec<Change>> {
     let ident = TableIdent::new(
