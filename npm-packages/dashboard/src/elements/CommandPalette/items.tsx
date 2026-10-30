@@ -454,8 +454,11 @@ export function ProjectItem({
   // Prefer the project's last-viewed deployment (and current subpage) like the
   // old header menu; `/t/team/project` would instead redirect to the default
   // dev/prod deployment, dropping that context and bouncing you off the
-  // deployment you're already on. Custom-role members go to the deployments
-  // list instead, since they may not be able to view the default deployment.
+  // deployment you're already on. Custom-role members go to the default
+  // deployment the backend returned for them, falling back to the deployments
+  // list when they can't view either default deployment. That reads the
+  // project list's deployment names rather than `useDeploymentUris`, which
+  // reports neither default while its own fetch is in flight.
   const { generateHref, defaultHref } = useDeploymentUris(
     project.id,
     project.slug,
@@ -464,8 +467,12 @@ export function ProjectItem({
   const [lastViewedDeployment] = useLastViewedDeploymentForProject(
     project.slug,
   );
+  const visibleDefaultDeployment =
+    project.devDeploymentName ?? project.prodDeploymentName;
   const projectHref = isCustomRoleMember
-    ? `/t/${teamSlug}?view=deployments&projectId=${project.id}`
+    ? visibleDefaultDeployment
+      ? generateHref(visibleDefaultDeployment)
+      : `/t/${teamSlug}?view=deployments&projectId=${project.id}`
     : lastViewedDeployment
       ? generateHref(lastViewedDeployment)
       : defaultHref;

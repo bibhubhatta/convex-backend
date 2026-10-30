@@ -51,6 +51,8 @@ export function ProjectCard({
     devDeploymentName,
     prodDeploymentReference,
     devDeploymentReference,
+    hasDefaultProdDeployment,
+    hasDefaultDevDeployment,
     isLoading: isLoadingDeployments,
   } = useDeploymentUris(id, slug);
 
@@ -58,12 +60,17 @@ export function ProjectCard({
 
   const hasAdminPermissions = useHasProjectAdminPermissions(project.id);
 
-  // Custom-role members get the deployments-list redirect instead of the
-  // Production/Development pair: the backend already nulls out
-  // `prodDeploymentName`/`devDeploymentName` for deployments they can't
-  // view, and we don't want to surface the provision links to them.
+  // For custom-role members the backend nulls out
+  // `prodDeploymentName`/`devDeploymentName` for deployments they can't view,
+  // so a missing default deployment may exist and be hidden. They only see
+  // pills for the default deployments they can view. Project admins can view
+  // every deployment in the project, so a missing one really is missing and
+  // they get provision links like built-in members.
   const myRoles = useMyCustomRoles(team?.id);
   const isCustomRoleMember = myRoles?.role === "custom";
+  const showProvisionLinks = !isCustomRoleMember || hasAdminPermissions;
+  const hasVisibleDefaultDeployment =
+    hasDefaultProdDeployment || hasDefaultDevDeployment;
 
   const canDeleteCustom = useHasCustomRolePermission(
     team?.id,
@@ -101,10 +108,12 @@ export function ProjectCard({
     },
   ];
 
-  // For custom-role members, redirect to the deployments list view scoped
-  // to this project so they can still discover any deployments their role
-  // allows (e.g. preview).
-  const cardHref = isCustomRoleMember ? deploymentsListHref : defaultHref;
+  // Custom-role members who can't view either default deployment go to the
+  // deployments list scoped to this project, so they can still discover any
+  // deployments their role allows (e.g. preview).
+  const opensDeploymentsList =
+    !showProvisionLinks && !hasVisibleDefaultDeployment;
+  const cardHref = opensDeploymentsList ? deploymentsListHref : defaultHref;
 
   const linkLabel = name?.length ? name : "Untitled Project";
   const href = deleteModal ? undefined : cardHref;
@@ -134,12 +143,6 @@ export function ProjectCard({
   const deployments =
     isLoadingDeployments || profile === undefined ? (
       <Loading className="h-6 w-56 rounded-md" fullHeight={false} />
-    ) : isCustomRoleMember ? (
-      <DeploymentPill
-        href={deploymentsListHref}
-        label="Deployments"
-        icon={<LayersIcon />}
-      />
     ) : (
       <DeploymentLinks
         isProdDefault={isProdDefault}
@@ -150,6 +153,10 @@ export function ProjectCard({
         prodDeploymentReference={prodDeploymentReference}
         devDeploymentReference={devDeploymentReference}
         defaultDevReference={defaultDevDeploymentReference(profile)}
+        showProvisionLinks={showProvisionLinks}
+        deploymentsListHref={
+          opensDeploymentsList ? deploymentsListHref : undefined
+        }
       />
     );
 
@@ -234,6 +241,10 @@ export function ProjectCard({
 // Pills are labeled with the deployment's reference. Local dev deployments have
 // none and read as "local"; any other deployment without one reads as the
 // reference it would be created with.
+//
+// A deployment that doesn't exist gets a pill linking to its provision page
+// only when `showProvisionLinks` is set. When the card opens the deployments
+// list instead, `deploymentsListHref` adds a leading pill for it.
 function DeploymentLinks({
   devHref,
   prodHref,
@@ -243,6 +254,8 @@ function DeploymentLinks({
   prodDeploymentReference,
   devDeploymentReference,
   defaultDevReference,
+  showProvisionLinks,
+  deploymentsListHref,
 }: {
   isProdDefault: boolean;
   devHref: string;
@@ -252,48 +265,62 @@ function DeploymentLinks({
   prodDeploymentReference: string | null;
   devDeploymentReference: string | null;
   defaultDevReference: string;
+  showProvisionLinks: boolean;
+  deploymentsListHref?: string;
 }) {
   return (
     <div className="flex min-w-0 gap-1.5">
-      <DeploymentPill
-        href={prodHref}
-        label={prodDeploymentReference ?? "production"}
-        isDefault={isProdDefault}
-        exists={prodDeploymentName !== null}
-        icon={
-          <SignalIcon
-            strokeWidth={2}
-            className="text-purple-500 dark:text-purple-200"
-          />
-        }
-        tip={
-          prodDeploymentName === null
-            ? "Add a new production deployment"
-            : `Production · ${prodDeploymentName}`
-        }
-      />
-      <DeploymentPill
-        href={devHref}
-        label={
-          devDeploymentReference ??
-          (devDeploymentName?.startsWith("local-")
-            ? "local"
-            : defaultDevReference)
-        }
-        isDefault={!isProdDefault}
-        exists={devDeploymentName !== null}
-        icon={
-          <CommandLineIcon
-            strokeWidth={2}
-            className="text-green-700 dark:text-green-500"
-          />
-        }
-        tip={
-          devDeploymentName === null
-            ? "Add a new personal dev deployment"
-            : `Development · ${devDeploymentName}`
-        }
-      />
+      {deploymentsListHref !== undefined && (
+        <DeploymentPill
+          href={deploymentsListHref}
+          label="Deployments"
+          isDefault
+          icon={<LayersIcon />}
+        />
+      )}
+      {(showProvisionLinks || prodDeploymentName !== null) && (
+        <DeploymentPill
+          href={prodHref}
+          label={prodDeploymentReference ?? "production"}
+          isDefault={isProdDefault}
+          exists={prodDeploymentName !== null}
+          icon={
+            <SignalIcon
+              strokeWidth={2}
+              className="text-purple-500 dark:text-purple-200"
+            />
+          }
+          tip={
+            prodDeploymentName === null
+              ? "Add a new production deployment"
+              : `Production · ${prodDeploymentName}`
+          }
+        />
+      )}
+      {(showProvisionLinks || devDeploymentName !== null) && (
+        <DeploymentPill
+          href={devHref}
+          label={
+            devDeploymentReference ??
+            (devDeploymentName?.startsWith("local-")
+              ? "local"
+              : defaultDevReference)
+          }
+          isDefault={!isProdDefault}
+          exists={devDeploymentName !== null}
+          icon={
+            <CommandLineIcon
+              strokeWidth={2}
+              className="text-green-700 dark:text-green-500"
+            />
+          }
+          tip={
+            devDeploymentName === null
+              ? "Add a new personal dev deployment"
+              : `Development · ${devDeploymentName}`
+          }
+        />
+      )}
     </div>
   );
 }
