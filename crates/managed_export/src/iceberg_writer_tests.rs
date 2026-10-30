@@ -62,6 +62,33 @@ async fn open_selecting(
     .await
 }
 
+async fn staged(
+    catalog: Arc<dyn Catalog>,
+    selected: Vec<SourceTable>,
+    locations: &BTreeMap<String, String>,
+    retired: &BTreeSet<String>,
+    snapshot_properties: HashMap<String, String>,
+) -> Result<IcebergChangeWriter> {
+    IcebergChangeWriter::staged_with_catalog(
+        catalog,
+        "convex_chess_wandering_fish_513",
+        "memory://warehouse",
+        selected,
+        locations,
+        retired,
+        snapshot_properties,
+        Format::Typed,
+    )
+    .await
+}
+
+async fn clear_registrations(catalog: &dyn Catalog, namespace: &NamespaceIdent) -> Result<()> {
+    for ident in catalog.list_tables(namespace).await? {
+        catalog.drop_table(&ident).await?;
+    }
+    Ok(())
+}
+
 async fn changes(writer: &IcebergChangeWriter, table: &str) -> Result<Vec<Change>> {
     let ident = TableIdent::new(
         writer.namespace.clone(),
@@ -385,8 +412,14 @@ async fn truncates_recreate_tables_and_changes_append() -> Result<()> {
 #[tokio::test]
 async fn locations_track_every_commit_and_summaries_name_the_page() -> Result<()> {
     let catalog = memory_catalog().await?;
-    let mut writer = open(catalog.clone()).await?;
-    writer.snapshot_properties = HashMap::from([("convex.page".to_owned(), "7".to_owned())]);
+    let mut writer = staged(
+        catalog.clone(),
+        vec![source("menu"), source("empty")],
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        HashMap::from([("convex.page".to_owned(), "7".to_owned())]),
+    )
+    .await?;
     writer
         .apply(
             &[source("menu"), source("empty")],
@@ -407,15 +440,15 @@ async fn locations_track_every_commit_and_summaries_name_the_page() -> Result<()
     let menu = &writer.tables[&source("menu")];
     let snapshot = menu.metadata().current_snapshot().unwrap();
     assert_eq!(snapshot.summary().additional_properties["convex.page"], "7");
-    let after_one_row = writer.bytes_written();
-    assert!(after_one_row > 0, "one Parquet file was written");
+    let after_one_document = writer.bytes_written();
+    assert!(after_one_document > 0, "one Parquet file was written");
 
     writer
         .apply(&[source("menu")], vec![], BTreeMap::new())
         .await?;
     assert_eq!(
         writer.bytes_written(),
-        after_one_row,
+        after_one_document,
         "recreating a table writes metadata only"
     );
     let menu = catalog
@@ -428,6 +461,157 @@ async fn locations_track_every_commit_and_summaries_name_the_page() -> Result<()
         writer.locations()["app__menu"],
         menu.metadata_location_result()?
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_writers_restore_committed_history_and_reset_byte_accounting() -> Result<()> {
+    let catalog = memory_catalog().await?;
+    let selected = vec![source("menu"), source("empty")];
+    let mut writer = staged(
+        catalog.clone(),
+        selected.clone(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        HashMap::new(),
+    )
+    .await?;
+    assert_eq!(writer.bytes_written(), 0);
+    writer
+        .apply(
+            &selected,
+            vec![(source("menu"), change("burger", 10, Some("10")))],
+            BTreeMap::new(),
+        )
+        .await?;
+    let after_create = writer.bytes_written();
+    writer
+        .apply(
+            &[],
+            vec![
+                (source("menu"), change("burger", 11, Some("11"))),
+                (source("menu"), change("burger", 12, None)),
+            ],
+            BTreeMap::new(),
+        )
+        .await?;
+    assert!(writer.bytes_written() > after_create);
+    let history = vec![
+        change("burger", 10, Some("10")),
+        change("burger", 11, Some("11")),
+        change("burger", 12, None),
+    ];
+    assert_eq!(changes(&writer, "menu").await?, history);
+    assert!(changes(&writer, "empty").await?.is_empty());
+    writer.retire_unselected(&[source("menu")]).await?;
+    let locations = writer.locations().clone();
+    let retired = writer.retired().unwrap().clone();
+    assert_eq!(retired, BTreeSet::from(["app__empty".to_owned()]));
+    let namespace = writer.namespace.clone();
+    drop(writer);
+    clear_registrations(&*catalog, &namespace).await?;
+
+    let mut writer = staged(
+        catalog.clone(),
+        selected.clone(),
+        &locations,
+        &retired,
+        HashMap::from([("convex.page".to_owned(), "8".to_owned())]),
+    )
+    .await?;
+    assert_eq!(writer.bytes_written(), 0);
+    assert_eq!(writer.locations(), &locations);
+    assert_eq!(writer.retired(), Some(&retired));
+    assert!(catalog.list_tables(&namespace).await?.is_empty());
+    writer
+        .apply(
+            &[],
+            vec![(source("menu"), change("burger", 13, Some("13")))],
+            BTreeMap::new(),
+        )
+        .await?;
+    assert!(writer.bytes_written() > 0);
+    let mut expected = history;
+    expected.push(change("burger", 13, Some("13")));
+    assert_eq!(changes(&writer, "menu").await?, expected);
+    assert_ne!(writer.locations()["app__menu"], locations["app__menu"]);
+    assert_eq!(writer.locations()["app__empty"], locations["app__empty"]);
+    let menu = catalog
+        .load_table(&TableIdent::new(namespace.clone(), "app__menu".to_owned()))
+        .await?;
+    assert_eq!(
+        menu.metadata()
+            .current_snapshot()
+            .unwrap()
+            .summary()
+            .additional_properties["convex.page"],
+        "8"
+    );
+
+    writer.retire_unselected(&selected).await?;
+    assert_eq!(writer.retired(), Some(&BTreeSet::new()));
+    assert!(changes(&writer, "empty").await?.is_empty());
+    assert_ne!(writer.locations()["app__empty"], locations["app__empty"]);
+    let after_append = writer.bytes_written();
+    writer
+        .apply(&[source("menu")], vec![], BTreeMap::new())
+        .await?;
+    assert!(changes(&writer, "menu").await?.is_empty());
+    assert_eq!(writer.bytes_written(), after_append);
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_catalog_requires_an_empty_namespace() -> Result<()> {
+    let catalog = memory_catalog().await?;
+    let mut writer = open(catalog.clone()).await?;
+    writer
+        .apply(&[source("menu")], vec![], BTreeMap::new())
+        .await?;
+    let locations = writer.locations().clone();
+    let namespace = writer.namespace.clone();
+    drop(writer);
+    let error = staged(
+        catalog.clone(),
+        vec![source("menu")],
+        &locations,
+        &BTreeSet::new(),
+        HashMap::new(),
+    )
+    .await
+    .err()
+    .expect("cached catalog pointers must be rejected");
+    assert!(
+        error.to_string().contains("no table registrations"),
+        "{error:#}"
+    );
+    assert_eq!(catalog.list_tables(&namespace).await?.len(), 1);
+
+    let isolated = memory_catalog().await?;
+    let mut writer = staged(
+        isolated.clone(),
+        vec![source("menu")],
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        HashMap::new(),
+    )
+    .await?;
+    let ident = TableIdent::new(namespace, "app__menu".to_owned());
+    assert!(!isolated.table_exists(&ident).await?);
+    writer
+        .apply(&[source("menu")], vec![], BTreeMap::new())
+        .await?;
+    let table = isolated.load_table(&ident).await?;
+    assert!(!table.file_io().exists(&locations["app__menu"]).await?);
+    assert!(
+        catalog
+            .load_table(&ident)
+            .await?
+            .file_io()
+            .exists(&locations["app__menu"])
+            .await?
+    );
+    assert_eq!(writer.bytes_written(), 0);
     Ok(())
 }
 
@@ -616,16 +800,18 @@ async fn a_known_retired_set_loads_only_the_tables_a_page_uses() -> Result<()> {
     let locations = writer.locations().clone();
     assert_eq!(writer.retired(), Some(&BTreeSet::new()));
 
-    // Forget the tables, as a fresh staged writer starts.
-    for name in locations.keys() {
-        catalog
-            .drop_table(&TableIdent::new(writer.namespace.clone(), name.clone()))
-            .await?;
-    }
-    let mut writer = open(catalog.clone()).await?;
-    writer.locations = locations.clone();
-    writer.unregistered = locations;
-    writer.retired = Some(BTreeSet::new());
+    let retired = writer.retired().unwrap().clone();
+    let namespace = writer.namespace.clone();
+    drop(writer);
+    clear_registrations(&*catalog, &namespace).await?;
+    let mut writer = staged(
+        catalog.clone(),
+        vec![source("menu"), source("orders")],
+        &locations,
+        &retired,
+        HashMap::new(),
+    )
+    .await?;
     let registered = async |writer: &IcebergChangeWriter| -> Result<Vec<String>> {
         Ok(catalog
             .list_tables(&writer.namespace)
@@ -634,6 +820,7 @@ async fn a_known_retired_set_loads_only_the_tables_a_page_uses() -> Result<()> {
             .map(|ident| ident.name().to_owned())
             .collect())
     };
+    assert!(registered(&writer).await?.is_empty());
 
     writer
         .apply(

@@ -94,14 +94,15 @@ pub struct IcebergChangeWriter {
     /// Metadata location of every table in the namespace, by Glue name.
     locations: BTreeMap<String, String>,
     /// Tables in `locations` that the catalog does not hold yet. Registering
-    /// reads the table's metadata from S3, so it waits until a page uses it.
+    /// reads the table's metadata from storage, so it waits until a page uses
+    /// it.
     unregistered: BTreeMap<String, String>,
     /// Glue names of the tables marked retired, when known. `None` makes
     /// retirement load every table to find out.
     retired: Option<BTreeSet<String>>,
     snapshot_properties: HashMap<String, String>,
-    /// Parquet bytes this writer has committed to the bucket. Billed to the
-    /// customer as data egress.
+    /// Parquet bytes this writer has committed to storage. S3 exports bill
+    /// these bytes to the customer as data egress.
     bytes_written: u64,
 }
 
@@ -149,14 +150,56 @@ impl IcebergChangeWriter {
             }))
             .load("porter", props)
             .await?;
-        let mut writer = Self::open(
+        Self::staged_with_catalog(
             Arc::new(catalog),
             namespace,
             warehouse_uri,
             selected,
+            locations,
+            retired,
+            snapshot_properties,
             format,
         )
-        .await?;
+        .await
+    }
+
+    /// Stages an export using an injected catalog and its storage. The
+    /// catalog's namespace must start with no table registrations;
+    /// `locations` is the complete committed state and its metadata
+    /// pointers register lazily as pages use them. `retired` must match
+    /// those committed metadata files. Namespace and source names follow
+    /// the same Glue naming rules as S3 exports. Each append records
+    /// `snapshot_properties` in its snapshot summary, and
+    /// [`Self::bytes_written`] counts Parquet bytes committed by this writer.
+    /// The caller commits [`Self::locations`] and [`Self::retired`] together
+    /// once the page succeeds.
+    ///
+    /// Use one writer per namespace at a time. To restart with OpenDAL memory
+    /// storage, retain the catalog, drop the writer, and clear its
+    /// registrations with [`Catalog::drop_table`] before opening the next
+    /// writer with saved committed state. `drop_table` preserves files;
+    /// `purge_table` deletes them. Building another memory catalog creates
+    /// a separate backing store even with the same warehouse URI, which
+    /// provides isolation between test cases.
+    pub async fn staged_with_catalog(
+        catalog: Arc<dyn Catalog>,
+        namespace: &str,
+        warehouse_uri: &str,
+        selected: Vec<SourceTable>,
+        locations: &BTreeMap<String, String>,
+        retired: &BTreeSet<String>,
+        snapshot_properties: HashMap<String, String>,
+        format: Format,
+    ) -> Result<Self> {
+        let mut writer = Self::open(catalog, namespace, warehouse_uri, selected, format).await?;
+        ensure!(
+            writer
+                .catalog
+                .list_tables(&writer.namespace)
+                .await?
+                .is_empty(),
+            "Staged catalog namespace must have no table registrations"
+        );
         writer.locations = locations.clone();
         writer.unregistered = locations.clone();
         writer.retired = Some(retired.clone());
