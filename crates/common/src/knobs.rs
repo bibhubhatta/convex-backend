@@ -1832,6 +1832,14 @@ pub static HTTP_SERVER_TIMEOUT_DURATION: LazyLock<Duration> =
 pub static MAX_PUSH_BYTES: LazyLock<usize> =
     LazyLock::new(|| env_config("MAX_PUSH_BYTES", 200_000_000));
 
+/// The limit on the size of push-time messages to and from funrun (analyze and
+/// schema, auth config, and component definition evaluation).
+/// This needs to be large enough to cover all of `MAX_UNZIPPED_PACKAGES_SIZE`,
+/// plus some buffer for environment variables, module paths, and protobuf
+/// framing.
+pub static MAX_FUNRUN_PUSH_MESSAGE_SIZE: LazyLock<usize> =
+    LazyLock::new(|| env_config("MAX_FUNRUN_PUSH_MESSAGE_SIZE", 246_000_000));
+
 /// Maximum buffered size, in bytes, of one client-driven snapshot import part.
 pub static MAX_IMPORT_UPLOAD_PART_BYTES: LazyLock<usize> =
     LazyLock::new(|| env_config("MAX_IMPORT_UPLOAD_PART_BYTES", 64 * 1024 * 1024));
