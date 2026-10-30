@@ -56,7 +56,6 @@ use model::log_sinks::types::{
     s3_export::{
         S3ExportConfig,
         S3ExportCredentials,
-        SyncPeriod,
     },
     sentry::{
         ExceptionFormatVersion,
@@ -581,8 +580,6 @@ pub struct CreateS3ExportLogStreamArgs {
     /// exports whole documents, so filtering fields within a table is rejected.
     #[serde(default)]
     selection: Option<Selection>,
-    /// How often the mirror is refreshed.
-    period: SyncPeriod,
 }
 
 impl TryFrom<CreateS3ExportLogStreamArgs> for S3ExportConfig {
@@ -616,7 +613,6 @@ impl TryFrom<CreateS3ExportLogStreamArgs> for S3ExportConfig {
             prefix: value.prefix,
             credentials,
             selection,
-            period: value.period,
         })
     }
 }
@@ -1099,8 +1095,6 @@ pub struct S3ExportLogStreamConfig {
     pub role_external_id: Option<String>,
     /// The components and tables being exported.
     pub selection: Selection,
-    /// How often the mirror is refreshed.
-    pub period: SyncPeriod,
 }
 
 fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig> {
@@ -1174,7 +1168,6 @@ fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig>
                 role_arn,
                 role_external_id,
                 selection: config.selection,
-                period: config.period,
             }))
         },
         _ => None,
@@ -1369,9 +1362,6 @@ pub struct UpdateS3ExportSinkArgs {
     /// documents, so filtering fields within a table is rejected.
     #[serde(default)]
     selection: Option<Selection>,
-    /// How often the mirror is refreshed.
-    #[serde(default)]
-    period: Option<SyncPeriod>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1706,7 +1696,6 @@ pub async fn update_log_stream(
                 selection: update_args
                     .selection
                     .unwrap_or(existing_config.selection.clone()),
-                period: update_args.period.unwrap_or(existing_config.period),
                 ..existing_config.clone()
             };
             let config = ensure_same_s3_destination(&existing_config, config)?;

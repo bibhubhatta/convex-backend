@@ -1,4 +1,4 @@
-import { syncSelection, syncPeriod } from "./streamingExport";
+import { syncSelection } from "./streamingExport";
 import { defineTable } from "convex/server";
 import { GenericValidator, v } from "convex/values";
 import {
@@ -386,7 +386,6 @@ export const integrationAuditConfig = v.union(
     bucket: v.string(),
     region: v.string(),
     prefix: auditOptionalString,
-    period: syncPeriod,
     selection: syncSelection,
   }),
 );

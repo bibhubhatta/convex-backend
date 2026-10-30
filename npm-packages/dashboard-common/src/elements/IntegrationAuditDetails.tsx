@@ -69,7 +69,6 @@ function configurationFields(config: Config): Field[] {
         { label: "Bucket", value: config.bucket },
         { label: "Region", value: config.region },
         { label: "Prefix", value: config.prefix ?? "(bucket root)" },
-        { label: "Schedule", value: config.period },
       ];
     default:
       config satisfies never;

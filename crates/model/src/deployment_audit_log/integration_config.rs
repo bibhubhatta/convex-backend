@@ -13,7 +13,6 @@ use crate::log_sinks::types::{
     s3_export::{
         S3ExportConfig,
         S3ExportCredentials,
-        SyncPeriod,
     },
     serialize_topics,
     webhook::WebhookFormat,
@@ -69,7 +68,6 @@ pub struct S3ExportAuditConfig {
     pub bucket: String,
     pub region: String,
     pub prefix: Option<String>,
-    pub period: SyncPeriod,
     pub selection: Selection,
 }
 
@@ -79,7 +77,6 @@ impl From<&S3ExportConfig> for S3ExportAuditConfig {
             bucket: config.bucket.clone(),
             region: config.region.clone(),
             prefix: config.prefix.clone(),
-            period: config.period,
             selection: config.selection.clone(),
         }
     }

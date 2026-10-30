@@ -30,10 +30,7 @@ import { Callout } from "@ui/Callout";
 import { ConfirmationDialog } from "@ui/ConfirmationDialog";
 import { DeploymentInfoContext } from "@common/lib/deploymentContext";
 import * as Yup from "yup";
-import {
-  SyncPeriod,
-  SyncSelection,
-} from "system-udfs/convex/_system/frontend/common";
+import { SyncSelection } from "system-udfs/convex/_system/frontend/common";
 import { AnalyticsIntegration } from "@common/lib/integrationHelpers";
 import {
   useCreateLogStream,
@@ -42,7 +39,6 @@ import {
 } from "@common/lib/integrationsApi";
 import { toast } from "@common/lib/utils";
 import { CopyButton } from "@common/elements/CopyButton";
-import { SyncPeriodSelector } from "./SyncPeriodSelector";
 import {
   exportRoot,
   glueDatabaseName,
@@ -84,13 +80,13 @@ const bucketSchema = Yup.string()
 const ROLE_STEP_FIELDS = [
   ["bucket", "region", "prefix"],
   ["roleArn"],
-  ["period"],
+  [],
 ] as const;
 // Access-key exports keep the shape they were created with.
 const ACCESS_KEY_STEP_FIELDS = [
   ["bucket", "region", "prefix"],
   ["accessKeyId", "secretAccessKey"],
-  ["period"],
+  [],
 ] as const;
 
 /**
@@ -399,7 +395,6 @@ export function S3ExportConfigurationForm({
     accessKeyId: string;
     secretAccessKey: string;
     roleArn: string;
-    period: SyncPeriod;
     selection: SyncSelection;
   }>({
     initialValues: {
@@ -414,7 +409,6 @@ export function S3ExportConfigurationForm({
       secretAccessKey: "",
       // Saved role ARNs differ only in the account, so show just that.
       roleArn: existingConfig?.roleArn?.split(":")[4] ?? "",
-      period: existingConfig?.period ?? "daily",
       selection: initialSelection,
     },
     onSubmit: async (values, helpers) => {
@@ -427,7 +421,6 @@ export function S3ExportConfigurationForm({
           bucket: values.bucket,
           region: values.region,
           prefix: values.prefix || null,
-          period: values.period,
           // OpenAPI's flattened map type cannot represent the `_other` default.
           ...(selection ? { selection: selection as Selection } : {}),
         };
@@ -447,7 +440,6 @@ export function S3ExportConfigurationForm({
           const roleArn = roleArnFor(values.roleArn, externalId) ?? "";
           await updateLogStream(logStreamId, {
             logStreamType: "s3Export",
-            period: values.period,
             ...(selection ? { selection: selection as Selection } : {}),
             ...(usesAccessKeys && values.secretAccessKey
               ? { secretAccessKey: values.secretAccessKey }
@@ -488,7 +480,6 @@ export function S3ExportConfigurationForm({
         bucket,
         region,
         prefix: prefix || null,
-        period: formState.values.period,
         roleArn: "",
       });
       onAddedIntegration?.();
@@ -895,12 +886,10 @@ export function S3ExportConfigurationForm({
                   but stop updating.
                 </p>
               )}
-            <SyncPeriodSelector
-              value={formState.values.period}
-              onChange={async (period) => {
-                await formState.setFieldValue("period", period);
-              }}
-            />
+            <p className="max-w-prose text-xs text-content-secondary">
+              The first export starts when you save. After it catches up, Convex
+              continuously syncs changes to S3.
+            </p>
           </Stepper.Step>
         </Stepper>
       </div>

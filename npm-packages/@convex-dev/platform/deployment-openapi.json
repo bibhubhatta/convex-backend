@@ -1826,8 +1826,7 @@
         "type": "object",
         "required": [
           "bucket",
-          "region",
-          "period"
+          "region"
         ],
         "properties": {
           "bucket": {
@@ -1875,10 +1874,6 @@
                 "description": "The components and tables to export. Defaults to everything. Each table\nexports whole documents, so filtering fields within a table is rejected."
               }
             ]
-          },
-          "period": {
-            "$ref": "#/components/schemas/SyncPeriod",
-            "description": "How often the mirror is refreshed."
           }
         }
       },
@@ -2911,8 +2906,7 @@
           "status",
           "bucket",
           "region",
-          "selection",
-          "period"
+          "selection"
         ],
         "properties": {
           "id": {
@@ -2961,10 +2955,6 @@
           "selection": {
             "$ref": "#/components/schemas/Selection",
             "description": "The components and tables being exported."
-          },
-          "period": {
-            "$ref": "#/components/schemas/SyncPeriod",
-            "description": "How often the mirror is refreshed."
           }
         }
       },
@@ -3040,15 +3030,6 @@
       "SyncId": {
         "type": "string",
         "description": "Unique id of a data sync, assigned by `/api/v1/data/sync` on the sync's\nfirst page and stable across its lifetime."
-      },
-      "SyncPeriod": {
-        "type": "string",
-        "description": "How often the mirror is refreshed from the deployment.",
-        "enum": [
-          "continuous",
-          "hourly",
-          "daily"
-        ]
       },
       "TableSelection": {
         "oneOf": [
@@ -3470,17 +3451,6 @@
               {
                 "$ref": "#/components/schemas/Selection",
                 "description": "The components and tables to export. Each table exports whole\ndocuments, so filtering fields within a table is rejected."
-              }
-            ]
-          },
-          "period": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/SyncPeriod",
-                "description": "How often the mirror is refreshed."
               }
             ]
           }

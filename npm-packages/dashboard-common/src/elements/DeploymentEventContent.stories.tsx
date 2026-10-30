@@ -1706,7 +1706,6 @@ const s3AuditConfig = {
   bucket: "analytics-bucket",
   region: "us-east-1",
   prefix: "exports/",
-  period: "daily" as const,
   selection: { _other: "included" as const },
 };
 
@@ -1733,7 +1732,6 @@ export const UpdateS3ExportIntegration: Story = {
           ...s3AuditConfig,
           bucket: "new-analytics-bucket",
           prefix: null,
-          period: "hourly",
           selection: {
             _other: "excluded",
             "": {

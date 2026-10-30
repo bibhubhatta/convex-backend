@@ -780,8 +780,6 @@ export interface components {
              *     until an update supplies the ARN. */
             roleArn?: string | null;
             selection?: null | components["schemas"]["Selection"];
-            /** @description How often the mirror is refreshed. */
-            period: components["schemas"]["SyncPeriod"];
         };
         CreateSentryLogStreamArgs: {
             /** @description Sentry Data Source Name (DSN) to route exceptions to. */
@@ -1133,8 +1131,6 @@ export interface components {
             roleExternalId?: string | null;
             /** @description The components and tables being exported. */
             selection: components["schemas"]["Selection"];
-            /** @description How often the mirror is refreshed. */
-            period: components["schemas"]["SyncPeriod"];
         };
         /**
          * @description Progress of the historical-usage backfill. Only `complete` guarantees the
@@ -1177,11 +1173,6 @@ export interface components {
         /** @description Unique id of a data sync, assigned by `/api/v1/data/sync` on the sync's
          *     first page and stable across its lifetime. */
         SyncId: string;
-        /**
-         * @description How often the mirror is refreshed from the deployment.
-         * @enum {string}
-         */
-        SyncPeriod: "continuous" | "hourly" | "daily";
         TableSelection: ({
             /** @description Whether columns not explicitly listed are exported */
             _other: components["schemas"]["InclusionDefault"];
@@ -1281,7 +1272,6 @@ export interface components {
              *     replaces the ARN, within the same AWS account. */
             roleArn?: string | null;
             selection?: null | components["schemas"]["Selection"];
-            period?: null | components["schemas"]["SyncPeriod"];
         };
         UpdateSentrySinkArgs: {
             /** @description Sentry Data Source Name (DSN) to route exceptions to. */
@@ -1422,7 +1412,6 @@ export type SeedStatusResponse = components['schemas']['SeedStatusResponse'];
 export type Selection = components['schemas']['Selection'];
 export type SentryLogStreamConfig = components['schemas']['SentryLogStreamConfig'];
 export type SyncId = components['schemas']['SyncId'];
-export type SyncPeriod = components['schemas']['SyncPeriod'];
 export type TableSelection = components['schemas']['TableSelection'];
 export type TeamId = components['schemas']['TeamId'];
 export type UpdateAxiomSinkArgs = components['schemas']['UpdateAxiomSinkArgs'];

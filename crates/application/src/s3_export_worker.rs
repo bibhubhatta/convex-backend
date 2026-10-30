@@ -21,10 +21,7 @@ use keybroker::Identity;
 use model::{
     log_sinks::{
         types::{
-            s3_export::{
-                S3ExportCredentials,
-                SyncPeriod,
-            },
+            s3_export::S3ExportCredentials,
             LogSinksRow,
             SinkConfig,
             SinkState,
@@ -248,7 +245,6 @@ impl<RT: Runtime> S3ExportWorker<RT> {
         }
         // After the checkpoint commit, which reads this document.
         self.set_status(&export, SinkState::Active).await?;
-        let interval = sync_interval(config.period);
         if matches!(&page.status, SyncStatus::UpToDate { .. }) {
             let mut tx = self.database.begin(Identity::system()).await?;
             let current = LogSinksModel::new(&mut tx)
@@ -266,20 +262,10 @@ impl<RT: Runtime> S3ExportWorker<RT> {
             let next_write_ts = (*self.database.now_ts_for_reads()).succ()?;
             let token = tx.into_token()?;
             let invalidated = self.database.subscribe_and_wait_for_invalidation(token);
-            match interval {
-                None => {
-                    tokio::select! {
-                        result = invalidated => { result?; },
-                        _ = self.database.wait_for_write_ts(next_write_ts) => {},
-                        _ = self.runtime.wait(CONTINUOUS_POLL_INTERVAL) => {},
-                    }
-                },
-                Some(interval) => {
-                    tokio::select! {
-                        result = invalidated => { result?; },
-                        _ = self.runtime.wait(interval) => {},
-                    }
-                },
+            tokio::select! {
+                result = invalidated => { result?; },
+                _ = self.database.wait_for_write_ts(next_write_ts) => {},
+                _ = self.runtime.wait(CONTINUOUS_POLL_INTERVAL) => {},
             }
         }
         Ok(())
@@ -319,14 +305,6 @@ fn is_same_export(
     current.is_some_and(|current| {
         current.developer_id() == export.developer_id() && current.config == export.config
     })
-}
-
-fn sync_interval(period: SyncPeriod) -> Option<Duration> {
-    match period {
-        SyncPeriod::Continuous => None,
-        SyncPeriod::Hourly => Some(Duration::from_secs(60 * 60)),
-        SyncPeriod::Daily => Some(Duration::from_secs(24 * 60 * 60)),
-    }
 }
 
 fn export_progress(status: &SyncStatus) -> anyhow::Result<S3ExportProgress> {

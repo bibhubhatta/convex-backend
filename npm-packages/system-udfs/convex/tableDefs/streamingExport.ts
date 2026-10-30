@@ -16,9 +16,3 @@ export const syncSelection = v.record(
     ),
   ),
 );
-
-export const syncPeriod = v.union(
-  v.literal("continuous"),
-  v.literal("hourly"),
-  v.literal("daily"),
-);

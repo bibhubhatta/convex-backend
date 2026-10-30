@@ -13,16 +13,6 @@ use serde::{
     Deserialize,
     Serialize,
 };
-use utoipa::ToSchema;
-
-/// How often the mirror is refreshed from the deployment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum SyncPeriod {
-    Continuous,
-    Hourly,
-    Daily,
-}
 
 /// A mirror in a customer-owned S3 bucket.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +25,6 @@ pub struct S3ExportConfig {
     pub credentials: S3ExportCredentials,
     /// The components and tables to export.
     pub selection: Selection,
-    pub period: SyncPeriod,
 }
 
 /// How Porter signs its writes to the bucket.
@@ -90,7 +79,6 @@ impl S3ExportConfig {
             prefix,
             credentials,
             selection: _,
-            period: _,
         } = self;
         // `Some("")` and `None` both write at the bucket root.
         let root_as_none = |prefix: &Option<String>| prefix.clone().filter(|p| !p.is_empty());
@@ -131,7 +119,6 @@ pub struct SerializedS3ExportConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_external_id: Option<String>,
     pub selection: Selection,
-    pub period: SyncPeriod,
 }
 
 impl From<S3ExportConfig> for SerializedS3ExportConfig {
@@ -161,7 +148,6 @@ impl From<S3ExportConfig> for SerializedS3ExportConfig {
             role_arn,
             role_external_id,
             selection: value.selection,
-            period: value.period,
         }
     }
 }
@@ -187,7 +173,6 @@ impl TryFrom<SerializedS3ExportConfig> for S3ExportConfig {
             prefix: value.prefix,
             credentials,
             selection: value.selection,
-            period: value.period,
         })
     }
 }
@@ -196,8 +181,8 @@ impl fmt::Display for S3ExportConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "S3ExportConfig {{ bucket: {}, region: {}, period: {:?} }}",
-            self.bucket, self.region, self.period
+            "S3ExportConfig {{ bucket: {}, region: {} }}",
+            self.bucket, self.region
         )
     }
 }

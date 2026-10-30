@@ -188,6 +188,4 @@ export type PostHogErrorTrackingConfig = Infer<
 
 export type S3ExportConfig = Infer<typeof s3ExportConfig>;
 
-export type SyncPeriod = S3ExportConfig["period"];
-
 export type SyncSelection = S3ExportConfig["selection"];

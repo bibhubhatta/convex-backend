@@ -368,7 +368,6 @@ function s3Export(progress: S3Progress | undefined): S3Integration {
         prefix: "convex",
         accessKeyId: "AKIAIOSFODNN7EXAMPLE",
         selection: {},
-        period: "daily",
       },
     },
   };

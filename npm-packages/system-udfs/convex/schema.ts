@@ -1,4 +1,4 @@
-import { syncSelection, syncPeriod } from "./tableDefs/streamingExport";
+import { syncSelection } from "./tableDefs/streamingExport";
 export { syncSelection } from "./tableDefs/streamingExport";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
@@ -295,7 +295,6 @@ export const s3ExportConfig = v.object({
   roleArn: v.optional(v.string()),
   roleExternalId: v.optional(v.string()),
   selection: syncSelection,
-  period: syncPeriod,
 });
 
 export const sinkConfig = v.union(
