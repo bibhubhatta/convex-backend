@@ -6933,7 +6933,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
- "async-trait",
  "aws-credential-types",
  "aws-sdk-glue",
  "aws-sdk-s3",

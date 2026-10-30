@@ -12,12 +12,6 @@ use anyhow::{
     Context,
     Result,
 };
-use common::knobs::S3_EXPORT_MAX_CONCURRENT_TABLE_WRITES;
-use futures::{
-    stream,
-    StreamExt,
-    TryStreamExt,
-};
 use iceberg::{
     io::{
         S3_ACCESS_KEY_ID,
@@ -225,12 +219,12 @@ impl IcebergChangeWriter {
         self.bytes_written
     }
 
-    async fn register(&self, name: &str) -> Result<()> {
-        if let Some(location) = self.unregistered.get(name) {
+    async fn register(&mut self, name: &str) -> Result<()> {
+        if let Some(location) = self.unregistered.remove(name) {
             self.catalog
                 .register_table(
                     &TableIdent::new(self.namespace.clone(), name.to_owned()),
-                    location.clone(),
+                    location,
                 )
                 .await?;
         }
@@ -359,7 +353,7 @@ impl IcebergChangeWriter {
     }
 
     #[fastrace::trace]
-    async fn load_existing(&self, ident: &TableIdent) -> Result<Option<Table>> {
+    async fn load_existing(&mut self, ident: &TableIdent) -> Result<Option<Table>> {
         self.register(ident.name()).await?;
         if !self.catalog.table_exists(ident).await? {
             return Ok(None);
@@ -388,7 +382,7 @@ impl IcebergChangeWriter {
 
     /// Creates `source`'s table with the metadata columns and `seeds`.
     #[fastrace::trace]
-    async fn create(&self, source: &SourceTable, seeds: Vec<AddColumn>) -> Result<Table> {
+    async fn create(&mut self, source: &SourceTable, seeds: Vec<AddColumn>) -> Result<()> {
         let name = Self::table_name(source)?;
         let creation = TableCreation::builder()
             .name(name.clone())
@@ -404,13 +398,16 @@ impl IcebergChangeWriter {
             ]))
             .build();
         let table = self.catalog.create_table(&self.namespace, creation).await?;
-        Ok(match self.format {
+        let table = match self.format {
             Format::Json => {
                 ensure!(seeds.is_empty(), "The JSON format takes no seed columns");
                 table
             },
             Format::Typed => columns::commit_columns(&*self.catalog, &table, seeds).await?,
-        })
+        };
+        self.record(&table)?;
+        self.tables.insert(source.clone(), table);
+        Ok(())
     }
 
     /// Requires one writer per namespace at a time. An `iceberg` commit rebases
@@ -440,7 +437,6 @@ impl IcebergChangeWriter {
             // deployment replaced it with `users`.
             let ident = TableIdent::new(self.namespace.clone(), name);
             if let Some(table) = self.load_existing(&ident).await? {
-                self.unregistered.remove(ident.name());
                 self.catalog.drop_table(&ident).await?;
                 self.locations.remove(ident.name());
                 // The recreated table starts unmarked.
@@ -449,59 +445,36 @@ impl IcebergChangeWriter {
                 }
                 self.tables.remove(&source_of(&table, self.format)?);
             }
-            let table = self
-                .create(source, seeds.remove(source).unwrap_or_default())
+            self.create(source, seeds.remove(source).unwrap_or_default())
                 .await?;
-            self.record(&table)?;
-            self.tables.insert(source.clone(), table);
         }
         let mut by_table: BTreeMap<SourceTable, Vec<Change>> = BTreeMap::new();
         for (source, change) in changes {
             by_table.entry(source).or_default().push(change);
         }
-        // Unique names give each task exclusive ownership of its catalog table.
-        // Collect every result before advancing the page's metadata locations.
-        let writer = &*self;
-        let by_table: Vec<_> = by_table
-            .into_iter()
-            .map(|(source, changes)| {
-                let seeds = seeds.remove(&source).unwrap_or_default();
-                (source, changes, seeds)
-            })
-            .collect();
-        let written: Vec<_> = stream::iter(by_table)
-            .map(|(source, changes, seeds)| async move {
-                let table = if let Some(table) = writer.tables.get(&source) {
-                    table.clone()
+        for (source, changes) in by_table {
+            if !self.tables.contains_key(&source) {
+                let ident = TableIdent::new(self.namespace.clone(), Self::table_name(&source)?);
+                if let Some(table) = self.load_existing(&ident).await? {
+                    ensure!(
+                        source_of(&table, self.format)? == source,
+                        "Glue table {} belongs to another source table",
+                        ident.name()
+                    );
+                    self.tables.insert(source.clone(), table);
                 } else {
-                    let name = Self::table_name(&source)?;
-                    let ident = TableIdent::new(writer.namespace.clone(), name);
-                    if let Some(table) = writer.load_existing(&ident).await? {
-                        ensure!(
-                            source_of(&table, writer.format)? == source,
-                            "Glue table {} belongs to another source table",
-                            ident.name()
-                        );
-                        table
-                    } else {
-                        writer.create(&source, seeds).await?
-                    }
-                };
-                let (table, bytes_written) = append(
-                    &*writer.catalog,
-                    &table,
-                    &changes,
-                    &writer.snapshot_properties,
-                    writer.format,
-                )
-                .await?;
-                Ok::<_, anyhow::Error>((source, table, bytes_written))
-            })
-            .buffer_unordered(*S3_EXPORT_MAX_CONCURRENT_TABLE_WRITES)
-            .try_collect()
+                    self.create(&source, seeds.remove(&source).unwrap_or_default())
+                        .await?;
+                }
+            }
+            let (table, bytes_written) = append(
+                &*self.catalog,
+                &self.tables[&source],
+                &changes,
+                &self.snapshot_properties,
+                self.format,
+            )
             .await?;
-        for (source, table, bytes_written) in written {
-            self.unregistered.remove(table.identifier().name());
             self.bytes_written += bytes_written;
             self.record(&table)?;
             self.tables.insert(source, table);
@@ -532,7 +505,6 @@ impl IcebergChangeWriter {
         // Retirement needs the full catalog, including tables untouched by this page.
         for name in self.unregistered.keys().cloned().collect::<Vec<_>>() {
             self.register(&name).await?;
-            self.unregistered.remove(&name);
         }
         for ident in self.catalog.list_tables(&self.namespace).await? {
             if let Some(table) = self.load_existing(&ident).await? {
