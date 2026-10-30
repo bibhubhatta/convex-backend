@@ -1,6 +1,7 @@
 //! Configuration for mirroring a deployment's data into object storage so it
-//! can be queried by analytics engines. These documents live in the log sinks
-//! table alongside log streams, but they carry no log sink client.
+//! can be queried by analytics engines. These documents live in the
+//! integrations table alongside log streams, but they carry no integration
+//! client.
 
 use std::fmt;
 

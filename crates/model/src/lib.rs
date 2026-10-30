@@ -145,8 +145,8 @@ use file_storage::{
     FILE_STORAGE_ID_INDEX,
     FILE_STORAGE_TABLE,
 };
+use integrations::IntegrationsTable;
 use keybroker::Identity;
-use log_sinks::LogSinksTable;
 use maplit::{
     btreemap,
     btreeset,
@@ -215,7 +215,7 @@ use crate::{
     environment_variables::EnvironmentVariablesTable,
     exports::ExportsTable,
     external_packages::EXTERNAL_PACKAGES_TABLE,
-    log_sinks::LOG_SINKS_TABLE,
+    integrations::INTEGRATIONS_TABLE,
     s3_export_state::{
         S3ExportStateTable,
         S3_EXPORT_STATE_BY_CONFIG_ID,
@@ -250,7 +250,7 @@ pub mod exports;
 pub mod external_packages;
 pub mod file_storage;
 pub mod fivetran_import;
-pub mod log_sinks;
+pub mod integrations;
 mod metrics;
 pub mod migrations;
 pub mod modules;
@@ -284,7 +284,7 @@ enum DefaultTableNumber {
     CronJobs = 19,
     Schemas = 20,
     CronJobLogs = 21,
-    LogSinks = 23,
+    Integrations = 23,
     BackendState = 24,
     ExternalPackages = 25,
     ScheduledJobs = 27,
@@ -337,7 +337,7 @@ impl From<DefaultTableNumber> for &'static dyn ErasedSystemTable {
             DefaultTableNumber::CronJobs => &CronJobsTable,
             DefaultTableNumber::Schemas => &SchemasTable,
             DefaultTableNumber::CronJobLogs => &CronJobLogsTable,
-            DefaultTableNumber::LogSinks => &LogSinksTable,
+            DefaultTableNumber::Integrations => &IntegrationsTable,
             DefaultTableNumber::S3ExportState => &S3ExportStateTable,
             DefaultTableNumber::BackendState => &BackendStateTable,
             DefaultTableNumber::ExternalPackages => &ExternalPackagesTable,
@@ -605,7 +605,7 @@ pub fn app_system_tables() -> Vec<&'static dyn ErasedSystemTable> {
         &SnapshotImportsTable,
         &FunctionHandlesTable,
         &CanonicalUrlsTable,
-        &LogSinksTable,
+        &IntegrationsTable,
         &S3ExportStateTable,
         &AuditLogConfigTable,
         &AwsLambdaVersionsTable,
@@ -685,7 +685,7 @@ pub static FIRST_SEEN_TABLE: LazyLock<BTreeMap<TableName, DatabaseVersion>> = La
         AWS_LAMBDA_VERSIONS_TABLE.clone() => 44,
         BACKEND_INFO_TABLE.clone() => 44,
         EXPORTS_TABLE.clone() => 44,
-        LOG_SINKS_TABLE.clone() => 68,
+        INTEGRATIONS_TABLE.clone() => 68,
         S3_EXPORT_STATE_TABLE.clone() => 134,
         TABLES_TABLE.clone() => 44,
         INDEX_TABLE.clone() => 44,

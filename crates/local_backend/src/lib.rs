@@ -101,7 +101,7 @@ pub mod deployment_jwks;
 pub mod deployment_state;
 pub mod environment_variables;
 pub mod http_actions;
-pub mod log_sinks;
+pub mod integrations;
 pub mod logs;
 pub mod node_action_callbacks;
 pub mod parse;

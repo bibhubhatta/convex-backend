@@ -171,8 +171,7 @@ const cronJobStatus = v.union(
   }),
 );
 
-// Log sinks
-export const sinkState = v.union(
+export const integrationState = v.union(
   v.object({
     type: v.literal("pending"),
   }),
@@ -297,7 +296,7 @@ export const s3ExportConfig = v.object({
   selection: syncSelection,
 });
 
-export const sinkConfig = v.union(
+export const integrationConfig = v.union(
   datadogConfig,
   webhookConfig,
   axiomConfig,
@@ -307,9 +306,9 @@ export const sinkConfig = v.union(
   s3ExportConfig,
 );
 
-const logSinksTable = defineTable({
-  status: sinkState,
-  config: sinkConfig,
+const integrationsTable = defineTable({
+  status: integrationState,
+  config: integrationConfig,
 });
 
 const userStopState = v.union(v.literal("none"), v.literal("paused"));
@@ -543,7 +542,7 @@ export default defineSchema({
     numDocsValidated: v.int64(),
     totalDocs: v.union(v.int64(), v.null()),
   }).index("by_validation_id", ["validationId"]),
-  _log_sinks: logSinksTable,
+  _log_sinks: integrationsTable,
   _s3_export_state: defineTable({
     configId: v.id("_log_sinks"),
     checkpoint: v.object({

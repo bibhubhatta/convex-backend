@@ -18,7 +18,7 @@ testing = [
     "indexing/testing",
     "isolate/testing",
     "keybroker/testing",
-    "log_streaming/testing",
+    "integrations/testing",
     "metrics/testing",
     "model/testing",
     "node_executor/testing",
@@ -74,10 +74,10 @@ http = { workspace = true }
 http_client = { workspace = true }
 humansize = { workspace = true }
 indexing = { workspace = true }
+integrations = { workspace = true }
 isolate = { workspace = true }
 itertools = { workspace = true }
 keybroker = { workspace = true }
-log_streaming = { workspace = true }
 lru = { workspace = true }
 maplit = { workspace = true }
 metrics = { workspace = true }
@@ -134,9 +134,9 @@ events = { workspace = true, features = ["testing"] }
 exports = { workspace = true, features = ["testing"] }
 function_runner = { workspace = true, features = ["testing"] }
 indexing = { workspace = true, features = ["testing"] }
+integrations = { workspace = true, features = ["testing"] }
 isolate = { workspace = true, features = ["testing"] }
 keybroker = { workspace = true, features = ["testing"] }
-log_streaming = { workspace = true, features = ["testing"] }
 metrics = { workspace = true, features = ["testing"] }
 model = { workspace = true, features = ["testing"] }
 must-let = { workspace = true }

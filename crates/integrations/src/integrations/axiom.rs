@@ -32,7 +32,7 @@ use http::{
     HeaderMap,
     HeaderValue,
 };
-use model::log_sinks::types::axiom::AxiomConfig;
+use model::integrations::types::axiom::AxiomConfig;
 use parking_lot::Mutex;
 use serde::{
     Serialize,
@@ -42,21 +42,21 @@ use tokio::sync::mpsc;
 
 use crate::{
     consts,
-    metrics::axiom_sink_network_egress_bytes,
-    sinks::{
+    integrations::{
         failure::{
-            classify_sink_response,
-            SinkEgressFailure,
-            SinkFailureReporter,
+            classify_integration_response,
+            IntegrationEgressFailure,
+            IntegrationFailureReporter,
         },
         utils::{
             self,
             build_event_batches,
             EgressCounter,
-            SinkFilter,
+            IntegrationFilter,
         },
     },
-    LogSinkClient,
+    metrics::axiom_integration_network_egress_bytes,
+    IntegrationClient,
     LoggingDeploymentMetadata,
 };
 
@@ -92,22 +92,22 @@ impl<'a> AxiomLogEvent<'a> {
     }
 }
 
-pub struct AxiomSink<RT: Runtime> {
+pub struct AxiomIntegration<RT: Runtime> {
     runtime: RT,
     axiom_url: reqwest::Url,
     api_key: String,
     attributes: BTreeMap<String, String>,
     log_event_format: LogEventFormatVersion,
-    filter: SinkFilter,
+    filter: IntegrationFilter,
     fetch_client: Arc<dyn FetchClient>,
     events_receiver: mpsc::Receiver<Vec<Arc<LogEvent>>>,
     backoff: Backoff,
     deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
     egress_counter: EgressCounter,
-    failure_reporter: SinkFailureReporter,
+    failure_reporter: IntegrationFailureReporter,
 }
 
-impl<RT: Runtime> AxiomSink<RT> {
+impl<RT: Runtime> AxiomIntegration<RT> {
     pub async fn start(
         runtime: RT,
         config: AxiomConfig,
@@ -115,11 +115,11 @@ impl<RT: Runtime> AxiomSink<RT> {
         fetch_client: Arc<dyn FetchClient>,
         deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         egress_counter: EgressCounter,
-        failure_reporter: SinkFailureReporter,
+        failure_reporter: IntegrationFailureReporter,
         should_verify: bool,
-    ) -> anyhow::Result<LogSinkClient> {
-        tracing::info!("Starting AxiomSink");
-        let (tx, rx) = mpsc::channel(consts::AXIOM_SINK_EVENTS_BUFFER_SIZE);
+    ) -> anyhow::Result<IntegrationClient> {
+        tracing::info!("Starting AxiomIntegration");
+        let (tx, rx) = mpsc::channel(consts::AXIOM_INTEGRATION_EVENTS_BUFFER_SIZE);
 
         let base_url = config
             .ingest_url
@@ -136,7 +136,7 @@ impl<RT: Runtime> AxiomSink<RT> {
             format!("{}/v1/ingest/{:}", base_url, config.dataset_name.clone())
         };
 
-        let mut sink = Self {
+        let mut integration = Self {
             runtime: runtime.clone(),
             deployment_metadata,
             axiom_url: axiom_url.parse()?,
@@ -146,25 +146,27 @@ impl<RT: Runtime> AxiomSink<RT> {
                 .into_iter()
                 .map(|a| (a.key, a.value))
                 .collect(),
-            filter: SinkFilter::for_version(config.version, subscribed_topics),
+            filter: IntegrationFilter::for_version(config.version, subscribed_topics),
             log_event_format: config.version,
             fetch_client,
             events_receiver: rx,
             backoff: Backoff::new(
-                consts::AXIOM_SINK_INITIAL_BACKOFF,
-                consts::AXIOM_SINK_MAX_BACKOFF,
+                consts::AXIOM_INTEGRATION_INITIAL_BACKOFF,
+                consts::AXIOM_INTEGRATION_MAX_BACKOFF,
             ),
             egress_counter,
             failure_reporter,
         };
 
         if should_verify {
-            sink.verify_creds().await?;
-            tracing::info!("AxiomSink verified!");
+            integration.verify_creds().await?;
+            tracing::info!("AxiomIntegration verified!");
         }
 
-        let handle = Arc::new(Mutex::new(runtime.spawn("axiom_sink", sink.go())));
-        let client = LogSinkClient {
+        let handle = Arc::new(Mutex::new(
+            runtime.spawn("axiom_integration", integration.go()),
+        ));
+        let client = IntegrationClient {
             _handle: handle,
             events_sender: tx,
         };
@@ -191,14 +193,14 @@ impl<RT: Runtime> AxiomSink<RT> {
             match self.events_receiver.recv().await {
                 None => {
                     // The sender was closed, event loop should shutdown
-                    tracing::warn!("Stopping AxiomSink. Sender was closed.");
+                    tracing::warn!("Stopping AxiomIntegration. Sender was closed.");
                     return;
                 },
                 Some(ev) => {
                     // Split events into batches
                     let batches = build_event_batches(
                         ev,
-                        consts::AXIOM_SINK_MAX_LOGS_PER_BATCH,
+                        consts::AXIOM_INTEGRATION_MAX_LOGS_PER_BATCH,
                         &self.filter,
                     );
 
@@ -235,7 +237,7 @@ impl<RT: Runtime> AxiomSink<RT> {
 
         // Make request in a loop that retries on transient errors
         let mut last_failure = None;
-        for _ in 0..consts::AXIOM_SINK_MAX_REQUEST_ATTEMPTS {
+        for _ in 0..consts::AXIOM_INTEGRATION_MAX_REQUEST_ATTEMPTS {
             let batch_json = batch_json.clone();
             let response = self
                 .fetch_client
@@ -253,20 +255,20 @@ impl<RT: Runtime> AxiomSink<RT> {
                 && let Ok(r) = &response
             {
                 let num_bytes_egress = r.request_size.load(Ordering::Relaxed);
-                utils::track_log_sink_bandwidth(
+                utils::track_integration_bandwidth(
                     num_bytes_egress,
                     &self.egress_counter,
-                    axiom_sink_network_egress_bytes,
+                    axiom_integration_network_egress_bytes,
                 );
             }
 
-            match classify_sink_response(response) {
+            match classify_integration_response(response) {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.is_rejected() => anyhow::bail!(failure),
                 Err(failure) => {
                     let delay = self.backoff.fail(&mut self.runtime.rng());
                     tracing::warn!(
-                        "Failed to send in Axiom sink: {failure}. Waiting {delay:?} before \
+                        "Failed to send in Axiom integration: {failure}. Waiting {delay:?} before \
                          retrying."
                     );
                     last_failure = Some(failure);
@@ -275,8 +277,8 @@ impl<RT: Runtime> AxiomSink<RT> {
             }
         }
 
-        anyhow::bail!(SinkEgressFailure::retries_exhausted(
-            consts::AXIOM_SINK_MAX_REQUEST_ATTEMPTS,
+        anyhow::bail!(IntegrationEgressFailure::retries_exhausted(
+            consts::AXIOM_INTEGRATION_MAX_REQUEST_ATTEMPTS,
             last_failure,
         ))
     }
@@ -290,7 +292,7 @@ impl<RT: Runtime> AxiomSink<RT> {
             LogEventFormatVersion::V1 => "1",
             LogEventFormatVersion::V2 => "2",
         };
-        crate::metrics::axiom_sink_logs_received(events.len(), log_event_format_version);
+        crate::metrics::axiom_integration_logs_received(events.len(), log_event_format_version);
 
         let mut values_to_send = vec![];
         let deployment_metadata = self.deployment_metadata.lock().clone();
@@ -313,7 +315,7 @@ impl<RT: Runtime> AxiomSink<RT> {
 
         self.send_batch(serde_json::to_vec(&values_to_send)?, false, track_egress)
             .await?;
-        crate::metrics::axiom_sink_logs_sent(batch_size, log_event_format_version);
+        crate::metrics::axiom_integration_logs_sent(batch_size, log_event_format_version);
 
         Ok(())
     }

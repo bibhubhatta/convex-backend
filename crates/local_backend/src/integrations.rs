@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use application::{
-    log_streaming::LogSinkWithId,
+    integrations::IntegrationWithId,
     Application,
 };
 use axum::{
@@ -41,7 +41,7 @@ use common::{
 use errors::ErrorMetadata;
 use http::StatusCode;
 use keybroker::Identity;
-use model::log_sinks::types::{
+use model::integrations::types::{
     axiom::{
         AxiomAttribute,
         AxiomConfig,
@@ -66,8 +66,8 @@ use model::log_sinks::types::{
         WebhookConfig,
         WebhookFormat,
     },
-    SinkConfig,
-    SinkType,
+    IntegrationConfig,
+    IntegrationType,
 };
 use roles::RequireDeploymentOp;
 use runtime::prod::ProdRuntime;
@@ -89,7 +89,8 @@ use crate::{
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-pub enum LogStreamStatus {
+#[schema(as = LogStreamStatus)]
+pub enum IntegrationStatus {
     Pending,
     Restarting,
     #[serde(rename_all = "camelCase")]
@@ -101,15 +102,15 @@ pub enum LogStreamStatus {
     Tombstoned,
 }
 
-impl From<model::log_sinks::types::SerializedSinkState> for LogStreamStatus {
-    fn from(value: model::log_sinks::types::SerializedSinkState) -> Self {
-        use model::log_sinks::types::SerializedSinkState;
+impl From<model::integrations::types::SerializedIntegrationState> for IntegrationStatus {
+    fn from(value: model::integrations::types::SerializedIntegrationState) -> Self {
+        use model::integrations::types::SerializedIntegrationState;
         match value {
-            SerializedSinkState::Pending => LogStreamStatus::Pending,
-            SerializedSinkState::Restarting => LogStreamStatus::Restarting,
-            SerializedSinkState::Failed { reason } => LogStreamStatus::Failed { reason },
-            SerializedSinkState::Active => LogStreamStatus::Active,
-            SerializedSinkState::Tombstoned => LogStreamStatus::Tombstoned,
+            SerializedIntegrationState::Pending => IntegrationStatus::Pending,
+            SerializedIntegrationState::Restarting => IntegrationStatus::Restarting,
+            SerializedIntegrationState::Failed { reason } => IntegrationStatus::Failed { reason },
+            SerializedIntegrationState::Active => IntegrationStatus::Active,
+            SerializedIntegrationState::Tombstoned => IntegrationStatus::Tombstoned,
         }
     }
 }
@@ -186,7 +187,8 @@ fn resolve_topics_update(
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-enum LogStreamType {
+#[schema(as = LogStreamType)]
+enum ApiIntegrationType {
     Datadog,
     Webhook,
     Axiom,
@@ -195,41 +197,41 @@ enum LogStreamType {
     PostHogErrorTracking,
 }
 
-impl From<LogStreamType> for SinkType {
-    fn from(log_stream_type: LogStreamType) -> Self {
-        match log_stream_type {
-            LogStreamType::Datadog => SinkType::Datadog,
-            LogStreamType::Webhook => SinkType::Webhook,
-            LogStreamType::Axiom => SinkType::Axiom,
-            LogStreamType::Sentry => SinkType::Sentry,
-            LogStreamType::PostHogLogs => SinkType::PostHogLogs,
-            LogStreamType::PostHogErrorTracking => SinkType::PostHogErrorTracking,
+impl From<ApiIntegrationType> for IntegrationType {
+    fn from(integration_type: ApiIntegrationType) -> Self {
+        match integration_type {
+            ApiIntegrationType::Datadog => IntegrationType::Datadog,
+            ApiIntegrationType::Webhook => IntegrationType::Webhook,
+            ApiIntegrationType::Axiom => IntegrationType::Axiom,
+            ApiIntegrationType::Sentry => IntegrationType::Sentry,
+            ApiIntegrationType::PostHogLogs => IntegrationType::PostHogLogs,
+            ApiIntegrationType::PostHogErrorTracking => IntegrationType::PostHogErrorTracking,
         }
     }
 }
 
 /// Analytics export destinations are gated on the streaming export entitlement;
-/// every other sink type streams logs and is gated on log streaming.
+/// every other integration type streams logs and is gated on log streaming.
 async fn ensure_integration_allowed(
     application: &Application<ProdRuntime>,
     identity: &Identity,
-    sink_type: &SinkType,
+    integration_type: &IntegrationType,
 ) -> anyhow::Result<()> {
-    match sink_type {
-        SinkType::S3Export => {
+    match integration_type {
+        IntegrationType::S3Export => {
             application
                 .ensure_streaming_export_enabled(identity.clone())
                 .await
         },
-        SinkType::Local
-        | SinkType::Datadog
-        | SinkType::DatadogV2
-        | SinkType::Webhook
-        | SinkType::Axiom
-        | SinkType::AxiomV2
-        | SinkType::Sentry
-        | SinkType::PostHogLogs
-        | SinkType::PostHogErrorTracking => {
+        IntegrationType::Local
+        | IntegrationType::Datadog
+        | IntegrationType::DatadogV2
+        | IntegrationType::Webhook
+        | IntegrationType::Axiom
+        | IntegrationType::AxiomV2
+        | IntegrationType::Sentry
+        | IntegrationType::PostHogLogs
+        | IntegrationType::PostHogErrorTracking => {
             application
                 .ensure_log_streaming_allowed(identity.clone())
                 .await
@@ -237,16 +239,16 @@ async fn ensure_integration_allowed(
     }
 }
 
-/// Delete log stream
+/// Delete integration
 ///
-/// Delete the deployment's log stream with the given id.
+/// Delete the deployment's integration with the given id.
 #[utoipa::path(
-    post,
-    path = "/delete_log_stream/{id}",
-    tag = "Log Streams",
+    delete,
+    path = "/integrations/{id}",
+    tag = "Integrations",
     responses((status = 200)),
     params(
-        ("id" = String, Path, description = "id of the log stream to delete"),
+        ("id" = String, Path, description = "id of the integration to delete"),
     ),
     security(
         ("Deploy Key" = []),
@@ -255,25 +257,31 @@ async fn ensure_integration_allowed(
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn delete_log_stream(
+pub async fn delete_integration(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
     ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
     identity.require_operation(keybroker::DeploymentOp::WriteIntegrations)?;
-    let sink = st.application.must_get_log_sink_by_id(&id).await?;
-    ensure_integration_allowed(&st.application, &identity, &sink.config.sink_type()).await?;
+    let integration = st.application.must_get_integration_by_id(&id).await?;
+    ensure_integration_allowed(
+        &st.application,
+        &identity,
+        &integration.config.integration_type(),
+    )
+    .await?;
 
     st.application
-        .remove_log_sink_by_id(identity, request_metadata, id)
+        .remove_integration_by_id(identity, request_metadata, id)
         .await?;
     Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateDatadogLogStreamArgs {
+#[schema(as = CreateDatadogLogStreamArgs)]
+pub struct CreateDatadogIntegrationArgs {
     /// Location of your Datadog deployment.
     site_location: DatadogSiteLocation,
     /// Datadog API key for authentication.
@@ -289,10 +297,10 @@ pub struct CreateDatadogLogStreamArgs {
     topics: Option<Vec<LogTopic>>,
 }
 
-impl TryFrom<CreateDatadogLogStreamArgs> for DatadogConfig {
+impl TryFrom<CreateDatadogIntegrationArgs> for DatadogConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreateDatadogLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreateDatadogIntegrationArgs) -> Result<Self, Self::Error> {
         Ok(Self {
             site_location: value.site_location,
             dd_api_key: value.dd_api_key.into(),
@@ -306,7 +314,8 @@ impl TryFrom<CreateDatadogLogStreamArgs> for DatadogConfig {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateWebhookLogStreamArgs {
+#[schema(as = CreateWebhookLogStreamArgs)]
+pub struct CreateWebhookIntegrationArgs {
     /// URL to send logs to.
     url: String,
     /// Format for the webhook payload. JSONL sends one object per line of
@@ -320,7 +329,8 @@ pub struct CreateWebhookLogStreamArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateAxiomLogStreamArgs {
+#[schema(as = CreateAxiomLogStreamArgs)]
+pub struct CreateAxiomIntegrationArgs {
     /// Axiom API key for authentication.
     api_key: String,
     /// Name of the dataset in Axiom. This is where the logs will be sent.
@@ -336,10 +346,10 @@ pub struct CreateAxiomLogStreamArgs {
     topics: Option<Vec<LogTopic>>,
 }
 
-impl TryFrom<CreateAxiomLogStreamArgs> for AxiomConfig {
+impl TryFrom<CreateAxiomIntegrationArgs> for AxiomConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreateAxiomLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreateAxiomIntegrationArgs) -> Result<Self, Self::Error> {
         validate_axiom_ingest_url(value.ingest_url.as_ref())?;
 
         Ok(Self {
@@ -355,7 +365,8 @@ impl TryFrom<CreateAxiomLogStreamArgs> for AxiomConfig {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateSentryLogStreamArgs {
+#[schema(as = CreateSentryLogStreamArgs)]
+pub struct CreateSentryIntegrationArgs {
     /// Sentry Data Source Name (DSN) to route exceptions to.
     dsn: String,
     /// Tags to add to all events routed to Sentry.
@@ -363,10 +374,10 @@ pub struct CreateSentryLogStreamArgs {
     tags: Option<BTreeMap<FieldName, String>>,
 }
 
-impl TryFrom<CreateSentryLogStreamArgs> for SentryConfig {
+impl TryFrom<CreateSentryIntegrationArgs> for SentryConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreateSentryLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreateSentryIntegrationArgs) -> Result<Self, Self::Error> {
         Ok(Self {
             dsn: value
                 .dsn
@@ -396,7 +407,8 @@ fn validate_posthog_host(host: Option<&String>) -> anyhow::Result<()> {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreatePostHogLogsLogStreamArgs {
+#[schema(as = CreatePostHogLogsLogStreamArgs)]
+pub struct CreatePostHogLogsIntegrationArgs {
     /// PostHog project token.
     api_key: String,
     /// PostHog host URL. Defaults to https://us.i.posthog.com.
@@ -409,10 +421,10 @@ pub struct CreatePostHogLogsLogStreamArgs {
     topics: Option<Vec<LogTopic>>,
 }
 
-impl TryFrom<CreatePostHogLogsLogStreamArgs> for PostHogLogsConfig {
+impl TryFrom<CreatePostHogLogsIntegrationArgs> for PostHogLogsConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreatePostHogLogsLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreatePostHogLogsIntegrationArgs) -> Result<Self, Self::Error> {
         validate_posthog_host(value.host.as_ref())?;
         Ok(Self {
             api_key: value.api_key.into(),
@@ -425,17 +437,18 @@ impl TryFrom<CreatePostHogLogsLogStreamArgs> for PostHogLogsConfig {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreatePostHogErrorTrackingLogStreamArgs {
+#[schema(as = CreatePostHogErrorTrackingLogStreamArgs)]
+pub struct CreatePostHogErrorTrackingIntegrationArgs {
     /// PostHog project token.
     api_key: String,
     /// PostHog host URL. Defaults to https://us.i.posthog.com.
     host: Option<String>,
 }
 
-impl TryFrom<CreatePostHogErrorTrackingLogStreamArgs> for PostHogErrorTrackingConfig {
+impl TryFrom<CreatePostHogErrorTrackingIntegrationArgs> for PostHogErrorTrackingConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreatePostHogErrorTrackingLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreatePostHogErrorTrackingIntegrationArgs) -> Result<Self, Self::Error> {
         validate_posthog_host(value.host.as_ref())?;
         Ok(Self {
             api_key: value.api_key.into(),
@@ -554,7 +567,8 @@ fn validate_s3_bucket(bucket: &str) -> anyhow::Result<()> {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateS3ExportLogStreamArgs {
+#[schema(as = CreateS3ExportLogStreamArgs)]
+pub struct CreateS3ExportIntegrationArgs {
     /// Name of the S3 bucket to mirror into.
     bucket: String,
     /// AWS region the bucket lives in, e.g. `us-east-1`.
@@ -582,10 +596,10 @@ pub struct CreateS3ExportLogStreamArgs {
     selection: Option<Selection>,
 }
 
-impl TryFrom<CreateS3ExportLogStreamArgs> for S3ExportConfig {
+impl TryFrom<CreateS3ExportIntegrationArgs> for S3ExportConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: CreateS3ExportLogStreamArgs) -> Result<Self, Self::Error> {
+    fn try_from(value: CreateS3ExportIntegrationArgs) -> Result<Self, Self::Error> {
         validate_s3_bucket(&value.bucket)?;
         validate_s3_region(&value.region)?;
         validate_s3_prefix(value.prefix.as_deref().unwrap_or_default())?;
@@ -619,40 +633,42 @@ impl TryFrom<CreateS3ExportLogStreamArgs> for S3ExportConfig {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-pub enum CreateLogStreamArgs {
+#[schema(as = CreateLogStreamArgs)]
+pub enum CreateIntegrationArgs {
     #[schema(title = "Datadog")]
-    Datadog(CreateDatadogLogStreamArgs),
+    Datadog(CreateDatadogIntegrationArgs),
     #[schema(title = "Webhook")]
-    Webhook(CreateWebhookLogStreamArgs),
+    Webhook(CreateWebhookIntegrationArgs),
     #[schema(title = "Axiom")]
-    Axiom(CreateAxiomLogStreamArgs),
+    Axiom(CreateAxiomIntegrationArgs),
     #[schema(title = "Sentry")]
-    Sentry(CreateSentryLogStreamArgs),
+    Sentry(CreateSentryIntegrationArgs),
     #[schema(title = "PostHogLogs")]
-    PostHogLogs(CreatePostHogLogsLogStreamArgs),
+    PostHogLogs(CreatePostHogLogsIntegrationArgs),
     #[schema(title = "PostHogErrorTracking")]
-    PostHogErrorTracking(CreatePostHogErrorTrackingLogStreamArgs),
+    PostHogErrorTracking(CreatePostHogErrorTrackingIntegrationArgs),
     #[schema(title = "S3Export")]
-    S3Export(CreateS3ExportLogStreamArgs),
+    S3Export(CreateS3ExportIntegrationArgs),
 }
 
-impl CreateLogStreamArgs {
-    fn sink_type(&self) -> SinkType {
+impl CreateIntegrationArgs {
+    fn integration_type(&self) -> IntegrationType {
         match self {
-            Self::Datadog(_) => SinkType::Datadog,
-            Self::Webhook(_) => SinkType::Webhook,
-            Self::Axiom(_) => SinkType::Axiom,
-            Self::Sentry(_) => SinkType::Sentry,
-            Self::PostHogLogs(_) => SinkType::PostHogLogs,
-            Self::PostHogErrorTracking(_) => SinkType::PostHogErrorTracking,
-            Self::S3Export(_) => SinkType::S3Export,
+            Self::Datadog(_) => IntegrationType::Datadog,
+            Self::Webhook(_) => IntegrationType::Webhook,
+            Self::Axiom(_) => IntegrationType::Axiom,
+            Self::Sentry(_) => IntegrationType::Sentry,
+            Self::PostHogLogs(_) => IntegrationType::PostHogLogs,
+            Self::PostHogErrorTracking(_) => IntegrationType::PostHogErrorTracking,
+            Self::S3Export(_) => IntegrationType::S3Export,
         }
     }
 }
 
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateWebhookLogStreamResponse {
+#[schema(as = CreateWebhookLogStreamResponse)]
+pub struct CreateWebhookIntegrationResponse {
     id: String,
     /// Use this secret to verify webhook signatures.
     hmac_secret: String,
@@ -660,9 +676,10 @@ pub struct CreateWebhookLogStreamResponse {
 
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-pub enum CreateLogStreamResponse {
+#[schema(as = CreateLogStreamResponse)]
+pub enum CreateIntegrationResponse {
     #[schema(title = "Webhook")]
-    Webhook(CreateWebhookLogStreamResponse),
+    Webhook(CreateWebhookIntegrationResponse),
     #[schema(title = "Datadog")]
     Datadog { id: String },
     #[schema(title = "Axiom")]
@@ -684,29 +701,33 @@ pub enum CreateLogStreamResponse {
     },
 }
 
-async fn ensure_log_sink_does_not_exist(
+async fn ensure_integration_does_not_exist(
     application: &Application<ProdRuntime>,
-    sink_type: &SinkType,
+    integration_type: &IntegrationType,
 ) -> Result<(), HttpResponseError> {
-    if application.get_log_sink(sink_type).await?.is_some() {
+    if application
+        .get_integration(integration_type)
+        .await?
+        .is_some()
+    {
         return Err(anyhow::anyhow!(ErrorMetadata::conflict(
             "LogStreamAlreadyExists",
-            format!("{sink_type:?} log stream already exists for this deployment",)
+            format!("{integration_type:?} log stream already exists for this deployment",)
         ))
         .into());
     }
     Ok(())
 }
 
-/// Create log stream
+/// Create integration
 ///
-/// Create a new log stream for the deployment. Errors if a log stream of the
+/// Create a new integration for the deployment. Errors if a integration of the
 /// given type already exists.
 #[utoipa::path(
     post,
-    path = "/create_log_stream",
-    tag = "Log Streams",
-    responses((status = 200, body = CreateLogStreamResponse)),
+    path = "/integrations",
+    tag = "Integrations",
+    responses((status = 200, body = CreateIntegrationResponse)),
     security(
         ("Deploy Key" = []),
         ("OAuth Team Token" = []),
@@ -714,76 +735,76 @@ async fn ensure_log_sink_does_not_exist(
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn create_log_stream(
+pub async fn create_integration(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
     ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
-    Json(args): Json<CreateLogStreamArgs>,
+    Json(args): Json<CreateIntegrationArgs>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
     identity.require_operation(keybroker::DeploymentOp::WriteIntegrations)?;
-    if matches!(&args, CreateLogStreamArgs::S3Export(_)) {
+    if matches!(&args, CreateIntegrationArgs::S3Export(_)) {
         identity.require_operation(keybroker::DeploymentOp::ViewData)?;
     }
-    ensure_integration_allowed(&st.application, &identity, &args.sink_type()).await?;
+    ensure_integration_allowed(&st.application, &identity, &args.integration_type()).await?;
 
     match args {
-        CreateLogStreamArgs::Datadog(datadog_sink_post_args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::Datadog).await?;
+        CreateIntegrationArgs::Datadog(datadog_integration_post_args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::Datadog).await?;
 
-            let config: DatadogConfig = datadog_sink_post_args.try_into()?;
+            let config: DatadogConfig = datadog_integration_post_args.try_into()?;
             ensure_topic_entitlements(&st.application, &identity, &config.topics).await?;
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::Datadog(config),
+                    IntegrationConfig::Datadog(config),
                 )
                 .await?;
-            Ok(Json(CreateLogStreamResponse::Datadog {
+            Ok(Json(CreateIntegrationResponse::Datadog {
                 id: id.to_string(),
             }))
         },
-        CreateLogStreamArgs::Webhook(webhook_sink_post_args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::Webhook).await?;
+        CreateIntegrationArgs::Webhook(webhook_integration_post_args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::Webhook).await?;
 
             let hmac_secret = generate_webhook_hmac_secret(st.application.runtime());
 
-            let url = webhook_sink_post_args.url.parse().map_err(|_| {
+            let url = webhook_integration_post_args.url.parse().map_err(|_| {
                 anyhow::anyhow!(ErrorMetadata::bad_request(
                     "InvalidWebhookUrl",
                     "The URL passed was invalid"
                 ))
             })?;
 
-            let topics = validate_subscribed_topics(webhook_sink_post_args.topics)?;
+            let topics = validate_subscribed_topics(webhook_integration_post_args.topics)?;
             ensure_topic_entitlements(&st.application, &identity, &topics).await?;
             let config = WebhookConfig {
                 url,
-                format: webhook_sink_post_args.format,
+                format: webhook_integration_post_args.format,
                 hmac_secret: hmac_secret.clone(),
                 topics,
             };
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::Webhook(config),
+                    IntegrationConfig::Webhook(config),
                 )
                 .await?;
 
-            Ok(Json(CreateLogStreamResponse::Webhook(
-                CreateWebhookLogStreamResponse {
+            Ok(Json(CreateIntegrationResponse::Webhook(
+                CreateWebhookIntegrationResponse {
                     hmac_secret,
                     id: id.to_string(),
                 },
             )))
         },
-        CreateLogStreamArgs::Axiom(axiom_sink_post_args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::Axiom).await?;
+        CreateIntegrationArgs::Axiom(axiom_integration_post_args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::Axiom).await?;
 
-            if axiom_sink_post_args.attributes.len() > *AXIOM_MAX_ATTRIBUTES {
+            if axiom_integration_post_args.attributes.len() > *AXIOM_MAX_ATTRIBUTES {
                 return Err(anyhow::anyhow!(
                     "Exceeded max number of Axiom attributes. Contact support@convex.dev to \
                      request a limit increase."
@@ -791,69 +812,77 @@ pub async fn create_log_stream(
                 .into());
             }
 
-            let config: AxiomConfig = axiom_sink_post_args.try_into()?;
+            let config: AxiomConfig = axiom_integration_post_args.try_into()?;
             ensure_topic_entitlements(&st.application, &identity, &config.topics).await?;
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::Axiom(config),
+                    IntegrationConfig::Axiom(config),
                 )
                 .await?;
 
-            Ok(Json(CreateLogStreamResponse::Axiom { id: id.to_string() }))
+            Ok(Json(CreateIntegrationResponse::Axiom {
+                id: id.to_string(),
+            }))
         },
-        CreateLogStreamArgs::Sentry(sentry_config_args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::Sentry).await?;
+        CreateIntegrationArgs::Sentry(sentry_config_args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::Sentry).await?;
 
             let config = sentry_config_args.try_into()?;
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::Sentry(config),
+                    IntegrationConfig::Sentry(config),
                 )
                 .await?;
-            Ok(Json(CreateLogStreamResponse::Sentry { id: id.to_string() }))
+            Ok(Json(CreateIntegrationResponse::Sentry {
+                id: id.to_string(),
+            }))
         },
-        CreateLogStreamArgs::PostHogLogs(args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::PostHogLogs).await?;
+        CreateIntegrationArgs::PostHogLogs(args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::PostHogLogs)
+                .await?;
 
             let config: PostHogLogsConfig = args.try_into()?;
             ensure_topic_entitlements(&st.application, &identity, &config.topics).await?;
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::PostHogLogs(config),
+                    IntegrationConfig::PostHogLogs(config),
                 )
                 .await?;
-            Ok(Json(CreateLogStreamResponse::PostHogLogs {
+            Ok(Json(CreateIntegrationResponse::PostHogLogs {
                 id: id.to_string(),
             }))
         },
-        CreateLogStreamArgs::PostHogErrorTracking(args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::PostHogErrorTracking)
-                .await?;
+        CreateIntegrationArgs::PostHogErrorTracking(args) => {
+            ensure_integration_does_not_exist(
+                &st.application,
+                &IntegrationType::PostHogErrorTracking,
+            )
+            .await?;
 
             let config: PostHogErrorTrackingConfig = args.try_into()?;
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::PostHogErrorTracking(config),
+                    IntegrationConfig::PostHogErrorTracking(config),
                 )
                 .await?;
-            Ok(Json(CreateLogStreamResponse::PostHogErrorTracking {
+            Ok(Json(CreateIntegrationResponse::PostHogErrorTracking {
                 id: id.to_string(),
             }))
         },
-        CreateLogStreamArgs::S3Export(args) => {
-            ensure_log_sink_does_not_exist(&st.application, &SinkType::S3Export).await?;
+        CreateIntegrationArgs::S3Export(args) => {
+            ensure_integration_does_not_exist(&st.application, &IntegrationType::S3Export).await?;
 
             let config: S3ExportConfig = args.try_into()?;
             let role_external_id = match &config.credentials {
@@ -862,13 +891,13 @@ pub async fn create_log_stream(
             };
             let id = st
                 .application
-                .add_log_sink(
+                .add_integration(
                     identity.clone(),
                     request_metadata.clone(),
-                    SinkConfig::S3Export(config),
+                    IntegrationConfig::S3Export(config),
                 )
                 .await?;
-            Ok(Json(CreateLogStreamResponse::S3Export {
+            Ok(Json(CreateIntegrationResponse::S3Export {
                 id: id.to_string(),
                 role_external_id,
             }))
@@ -878,28 +907,30 @@ pub async fn create_log_stream(
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-pub enum RotateLogStreamSecretArgs {
+#[schema(as = RotateLogStreamSecretArgs)]
+pub enum RotateIntegrationSecretArgs {
     Webhook,
 }
 
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-pub enum RotateLogStreamSecretResponse {
+#[schema(as = RotateLogStreamSecretResponse)]
+pub enum RotateIntegrationSecretResponse {
     #[serde(rename_all = "camelCase")]
     #[schema(title = "Webhook")]
     Webhook { hmac_secret: String },
 }
 
-/// Rotate webhook log stream secret
+/// Rotate webhook integration secret
 ///
-/// Rotate the secret for the webhook log stream.
+/// Rotate the secret for the webhook integration.
 #[utoipa::path(
     post,
-    path = "/rotate_webhook_secret/{id}",
-    tag = "Log Streams",
-    responses((status = 200, body = RotateLogStreamSecretResponse)),
+    path = "/integrations/{id}/rotate_webhook_secret",
+    tag = "Integrations",
+    responses((status = 200, body = RotateIntegrationSecretResponse)),
     params(
-        ("id" = String, Path, description = "id of the webhook log stream for which to rotate the secret"),
+        ("id" = String, Path, description = "id of the webhook integration for which to rotate the secret"),
     ),
     security(
         ("Deploy Key" = []),
@@ -908,7 +939,7 @@ pub enum RotateLogStreamSecretResponse {
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn rotate_webhook_secret(
+pub async fn rotate_integration_webhook_secret(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
     ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
@@ -919,26 +950,33 @@ pub async fn rotate_webhook_secret(
         .ensure_log_streaming_allowed(identity.clone())
         .await?;
 
-    let LogSinkWithId {
-        config: sink_config,
+    let IntegrationWithId {
+        config: integration_config,
         ..
-    } = st.application.must_get_log_sink_by_id(&id).await?;
+    } = st.application.must_get_integration_by_id(&id).await?;
 
-    match sink_config {
-        SinkConfig::Webhook(existing_webhook_sink) => {
+    match integration_config {
+        IntegrationConfig::Webhook(existing_webhook_integration) => {
             let hmac_secret = generate_webhook_hmac_secret(st.application.runtime());
 
             let config = WebhookConfig {
-                url: existing_webhook_sink.url,
-                format: existing_webhook_sink.format,
+                url: existing_webhook_integration.url,
+                format: existing_webhook_integration.format,
                 hmac_secret: hmac_secret.clone(),
-                topics: existing_webhook_sink.topics,
+                topics: existing_webhook_integration.topics,
             };
             st.application
-                .patch_log_sink_config(identity, request_metadata, &id, SinkConfig::Webhook(config))
+                .patch_integration_config(
+                    identity,
+                    request_metadata,
+                    &id,
+                    IntegrationConfig::Webhook(config),
+                )
                 .await?;
 
-            Ok(Json(RotateLogStreamSecretResponse::Webhook { hmac_secret }))
+            Ok(Json(RotateIntegrationSecretResponse::Webhook {
+                hmac_secret,
+            }))
         },
         _ => Err(anyhow::anyhow!(ErrorMetadata::bad_request(
             "NoSecretToRotate",
@@ -950,30 +988,32 @@ pub async fn rotate_webhook_secret(
 
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-enum LogStreamConfig {
+#[schema(as = LogStreamConfig)]
+enum IntegrationResponse {
     #[schema(title = "Datadog")]
-    Datadog(DatadogLogStreamConfig),
+    Datadog(DatadogIntegrationConfig),
     #[schema(title = "Webhook")]
-    Webhook(WebhookLogStreamConfig),
+    Webhook(WebhookIntegrationConfig),
     #[schema(title = "Axiom")]
-    Axiom(AxiomLogStreamConfig),
+    Axiom(AxiomIntegrationConfig),
     #[schema(title = "Sentry")]
-    Sentry(SentryLogStreamConfig),
+    Sentry(SentryIntegrationConfig),
     #[schema(title = "PostHogLogs")]
-    PostHogLogs(PostHogLogsLogStreamConfig),
+    PostHogLogs(PostHogLogsIntegrationConfig),
     #[schema(title = "PostHogErrorTracking")]
-    PostHogErrorTracking(PostHogErrorTrackingLogStreamConfig),
+    PostHogErrorTracking(PostHogErrorTrackingIntegrationConfig),
     #[schema(title = "S3Export")]
-    S3Export(S3ExportLogStreamConfig),
+    S3Export(S3ExportIntegrationConfig),
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "DatadogConfig")]
-pub struct DatadogLogStreamConfig {
+#[schema(as = DatadogLogStreamConfig)]
+pub struct DatadogIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// Location of your Datadog deployment.
     pub site_location: DatadogSiteLocation,
     /// Optional comma-separated list of tags. These are sent to Datadog in each
@@ -990,10 +1030,11 @@ pub struct DatadogLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "WebhookConfig")]
-pub struct WebhookLogStreamConfig {
+#[schema(as = WebhookLogStreamConfig)]
+pub struct WebhookIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// URL to send logs to.
     pub url: String,
     /// Format for the webhook payload. JSONL sends one object per line of
@@ -1009,10 +1050,11 @@ pub struct WebhookLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "AxiomConfig")]
-pub struct AxiomLogStreamConfig {
+#[schema(as = AxiomLogStreamConfig)]
+pub struct AxiomIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// Name of the dataset in Axiom. This is where the logs will be sent.
     pub dataset_name: String,
     /// Optional list of attributes. These are extra fields and values sent to
@@ -1029,10 +1071,11 @@ pub struct AxiomLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "SentryConfig")]
-pub struct SentryLogStreamConfig {
+#[schema(as = SentryLogStreamConfig)]
+pub struct SentryIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// Tags to add to all events routed to Sentry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<BTreeMap<String, String>>,
@@ -1041,10 +1084,11 @@ pub struct SentryLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "PostHogLogsConfig")]
-pub struct PostHogLogsLogStreamConfig {
+#[schema(as = PostHogLogsLogStreamConfig)]
+pub struct PostHogLogsIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// PostHog host URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
@@ -1059,10 +1103,11 @@ pub struct PostHogLogsLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "PostHogErrorTrackingConfig")]
-pub struct PostHogErrorTrackingLogStreamConfig {
+#[schema(as = PostHogErrorTrackingLogStreamConfig)]
+pub struct PostHogErrorTrackingIntegrationConfig {
     pub id: String,
     /// Status of the log stream
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// PostHog host URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
@@ -1071,10 +1116,11 @@ pub struct PostHogErrorTrackingLogStreamConfig {
 #[derive(Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[schema(title = "S3ExportConfig")]
-pub struct S3ExportLogStreamConfig {
+#[schema(as = S3ExportLogStreamConfig)]
+pub struct S3ExportIntegrationConfig {
     pub id: String,
     /// Status of the integration
-    pub status: LogStreamStatus,
+    pub status: IntegrationStatus,
     /// Name of the S3 bucket being mirrored into.
     pub bucket: String,
     /// AWS region the bucket lives in.
@@ -1097,58 +1143,67 @@ pub struct S3ExportLogStreamConfig {
     pub selection: Selection,
 }
 
-fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig> {
-    let status: LogStreamStatus =
-        Into::<model::log_sinks::types::SerializedSinkState>::into(sink.status).into();
-    match sink.config {
-        SinkConfig::Datadog(config) => Some(LogStreamConfig::Datadog(DatadogLogStreamConfig {
-            id: sink.id.to_string(),
-            status,
-            site_location: config.site_location,
-            dd_tags: config.dd_tags,
-            service: config.service,
-            topics: config.topics.map(|topics| topics.into_iter().collect()),
-        })),
-        SinkConfig::Webhook(config) => Some(LogStreamConfig::Webhook(WebhookLogStreamConfig {
-            id: sink.id.to_string(),
-            status,
-            url: config.url.to_string(),
-            format: config.format,
-            hmac_secret: config.hmac_secret,
-            topics: config.topics.map(|topics| topics.into_iter().collect()),
-        })),
-        SinkConfig::Axiom(config) => Some(LogStreamConfig::Axiom(AxiomLogStreamConfig {
-            id: sink.id.to_string(),
-            status,
-            dataset_name: config.dataset_name,
-            attributes: config.attributes,
-            ingest_url: config.ingest_url,
-            topics: config.topics.map(|topics| topics.into_iter().collect()),
-        })),
-        SinkConfig::Sentry(config) => Some(LogStreamConfig::Sentry(SentryLogStreamConfig {
-            id: sink.id.to_string(),
-            status,
-            tags: config
-                .tags
-                .map(|tags| tags.into_iter().map(|(k, v)| (k.into(), v)).collect()),
-        })),
-        SinkConfig::PostHogLogs(config) => {
-            Some(LogStreamConfig::PostHogLogs(PostHogLogsLogStreamConfig {
-                id: sink.id.to_string(),
+fn integration_to_api_config(integration: IntegrationWithId) -> Option<IntegrationResponse> {
+    let status: IntegrationStatus =
+        Into::<model::integrations::types::SerializedIntegrationState>::into(integration.status)
+            .into();
+    match integration.config {
+        IntegrationConfig::Datadog(config) => {
+            Some(IntegrationResponse::Datadog(DatadogIntegrationConfig {
+                id: integration.id.to_string(),
+                status,
+                site_location: config.site_location,
+                dd_tags: config.dd_tags,
+                service: config.service,
+                topics: config.topics.map(|topics| topics.into_iter().collect()),
+            }))
+        },
+        IntegrationConfig::Webhook(config) => {
+            Some(IntegrationResponse::Webhook(WebhookIntegrationConfig {
+                id: integration.id.to_string(),
+                status,
+                url: config.url.to_string(),
+                format: config.format,
+                hmac_secret: config.hmac_secret,
+                topics: config.topics.map(|topics| topics.into_iter().collect()),
+            }))
+        },
+        IntegrationConfig::Axiom(config) => {
+            Some(IntegrationResponse::Axiom(AxiomIntegrationConfig {
+                id: integration.id.to_string(),
+                status,
+                dataset_name: config.dataset_name,
+                attributes: config.attributes,
+                ingest_url: config.ingest_url,
+                topics: config.topics.map(|topics| topics.into_iter().collect()),
+            }))
+        },
+        IntegrationConfig::Sentry(config) => {
+            Some(IntegrationResponse::Sentry(SentryIntegrationConfig {
+                id: integration.id.to_string(),
+                status,
+                tags: config
+                    .tags
+                    .map(|tags| tags.into_iter().map(|(k, v)| (k.into(), v)).collect()),
+            }))
+        },
+        IntegrationConfig::PostHogLogs(config) => Some(IntegrationResponse::PostHogLogs(
+            PostHogLogsIntegrationConfig {
+                id: integration.id.to_string(),
                 status,
                 host: config.host,
                 service_name: config.service_name,
                 topics: config.topics.map(|topics| topics.into_iter().collect()),
-            }))
-        },
-        SinkConfig::PostHogErrorTracking(config) => Some(LogStreamConfig::PostHogErrorTracking(
-            PostHogErrorTrackingLogStreamConfig {
-                id: sink.id.to_string(),
-                status,
-                host: config.host,
             },
         )),
-        SinkConfig::S3Export(config) => {
+        IntegrationConfig::PostHogErrorTracking(config) => Some(
+            IntegrationResponse::PostHogErrorTracking(PostHogErrorTrackingIntegrationConfig {
+                id: integration.id.to_string(),
+                status,
+                host: config.host,
+            }),
+        ),
+        IntegrationConfig::S3Export(config) => {
             let (access_key_id, role_arn, role_external_id) = match config.credentials {
                 S3ExportCredentials::AccessKey { access_key_id, .. } => {
                     (Some(access_key_id.into_value()), None, None)
@@ -1158,8 +1213,8 @@ fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig>
                     external_id,
                 } => (None, Some(role_arn), Some(external_id)),
             };
-            Some(LogStreamConfig::S3Export(S3ExportLogStreamConfig {
-                id: sink.id.to_string(),
+            Some(IntegrationResponse::S3Export(S3ExportIntegrationConfig {
+                id: integration.id.to_string(),
                 status,
                 bucket: config.bucket,
                 region: config.region,
@@ -1174,14 +1229,14 @@ fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig>
     }
 }
 
-/// List log streams
+/// List integrations
 ///
-/// List configs for all existing log streams in a deployment.
+/// List configs for all existing integrations in a deployment.
 #[utoipa::path(
     get,
-    path = "/list_log_streams",
-    tag = "Log Streams",
-    responses((status = 200, body = Vec<LogStreamConfig>)),
+    path = "/integrations",
+    tag = "Integrations",
+    responses((status = 200, body = Vec<IntegrationResponse>)),
     security(
         ("Deploy Key" = []),
         ("OAuth Team Token" = []),
@@ -1189,7 +1244,7 @@ fn log_sink_to_log_stream_config(sink: LogSinkWithId) -> Option<LogStreamConfig>
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn list_log_streams(
+pub async fn list_integrations(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
 ) -> Result<impl IntoResponse, HttpResponseError> {
@@ -1197,24 +1252,24 @@ pub async fn list_log_streams(
 
     Ok(Json(
         st.application
-            .list_log_sinks()
+            .list_integrations()
             .await?
             .into_iter()
-            .filter_map(log_sink_to_log_stream_config)
-            .collect::<Vec<LogStreamConfig>>(),
+            .filter_map(integration_to_api_config)
+            .collect::<Vec<IntegrationResponse>>(),
     ))
 }
 
-/// Get log stream
+/// Get integration
 ///
-/// Get the config for a specific log stream by id.
+/// Get the config for a specific integration by id.
 #[utoipa::path(
     get,
-    path = "/get_log_stream/{id}",
-    tag = "Log Streams",
-    responses((status = 200, body = LogStreamConfig)),
+    path = "/integrations/{id}",
+    tag = "Integrations",
+    responses((status = 200, body = IntegrationResponse)),
     params(
-        ("id" = String, Path, description = "id of the log stream to retrieve"),
+        ("id" = String, Path, description = "id of the integration to retrieve"),
     ),
     security(
         ("Deploy Key" = []),
@@ -1223,16 +1278,16 @@ pub async fn list_log_streams(
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn get_log_stream(
+pub async fn get_integration(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
     identity.require_operation(keybroker::DeploymentOp::ViewIntegrations)?;
 
-    let log_sink_with_id = st.application.must_get_log_sink_by_id(&id).await?;
+    let integration_with_id = st.application.must_get_integration_by_id(&id).await?;
 
-    let config = log_sink_to_log_stream_config(log_sink_with_id).ok_or_else(|| {
+    let config = integration_to_api_config(integration_with_id).ok_or_else(|| {
         anyhow::anyhow!(ErrorMetadata::bad_request(
             "UnsupportedLogStreamType",
             "This log stream type is not supported",
@@ -1244,7 +1299,8 @@ pub async fn get_log_stream(
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateDatadogSinkArgs {
+#[schema(as = UpdateDatadogSinkArgs)]
+pub struct UpdateDatadogIntegrationArgs {
     /// Location of your Datadog deployment.
     #[serde(default)]
     site_location: Option<DatadogSiteLocation>,
@@ -1267,7 +1323,8 @@ pub struct UpdateDatadogSinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateWebhookSinkArgs {
+#[schema(as = UpdateWebhookSinkArgs)]
+pub struct UpdateWebhookIntegrationArgs {
     /// URL to send logs to.
     #[serde(default)]
     url: Option<String>,
@@ -1284,7 +1341,8 @@ pub struct UpdateWebhookSinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateAxiomSinkArgs {
+#[schema(as = UpdateAxiomSinkArgs)]
+pub struct UpdateAxiomIntegrationArgs {
     /// Axiom API key for authentication.
     #[serde(default)]
     api_key: Option<String>,
@@ -1307,7 +1365,8 @@ pub struct UpdateAxiomSinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateSentrySinkArgs {
+#[schema(as = UpdateSentrySinkArgs)]
+pub struct UpdateSentryIntegrationArgs {
     /// Sentry Data Source Name (DSN) to route exceptions to.
     #[serde(default)]
     dsn: Option<String>,
@@ -1319,7 +1378,8 @@ pub struct UpdateSentrySinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdatePostHogLogsSinkArgs {
+#[schema(as = UpdatePostHogLogsSinkArgs)]
+pub struct UpdatePostHogLogsIntegrationArgs {
     /// PostHog project token.
     #[serde(default)]
     api_key: Option<String>,
@@ -1338,7 +1398,8 @@ pub struct UpdatePostHogLogsSinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdatePostHogErrorTrackingSinkArgs {
+#[schema(as = UpdatePostHogErrorTrackingSinkArgs)]
+pub struct UpdatePostHogErrorTrackingIntegrationArgs {
     /// PostHog project token.
     #[serde(default)]
     api_key: Option<String>,
@@ -1350,7 +1411,8 @@ pub struct UpdatePostHogErrorTrackingSinkArgs {
 /// Destination and AWS access key ID are fixed at creation.
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateS3ExportSinkArgs {
+#[schema(as = UpdateS3ExportSinkArgs)]
+pub struct UpdateS3ExportIntegrationArgs {
     /// A new secret for the export's access key ID. Access-key exports only.
     #[serde(default)]
     secret_access_key: Option<String>,
@@ -1366,34 +1428,35 @@ pub struct UpdateS3ExportSinkArgs {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "logStreamType")]
-pub enum UpdateLogStreamArgs {
+#[schema(as = UpdateLogStreamArgs)]
+pub enum UpdateIntegrationArgs {
     #[schema(title = "Datadog")]
-    Datadog(UpdateDatadogSinkArgs),
+    Datadog(UpdateDatadogIntegrationArgs),
     #[schema(title = "Webhook")]
-    Webhook(UpdateWebhookSinkArgs),
+    Webhook(UpdateWebhookIntegrationArgs),
     #[schema(title = "Axiom")]
-    Axiom(UpdateAxiomSinkArgs),
+    Axiom(UpdateAxiomIntegrationArgs),
     #[schema(title = "Sentry")]
-    Sentry(UpdateSentrySinkArgs),
+    Sentry(UpdateSentryIntegrationArgs),
     #[schema(title = "PostHogLogs")]
-    PostHogLogs(UpdatePostHogLogsSinkArgs),
+    PostHogLogs(UpdatePostHogLogsIntegrationArgs),
     #[schema(title = "PostHogErrorTracking")]
-    PostHogErrorTracking(UpdatePostHogErrorTrackingSinkArgs),
+    PostHogErrorTracking(UpdatePostHogErrorTrackingIntegrationArgs),
     #[schema(title = "S3Export")]
-    S3Export(UpdateS3ExportSinkArgs),
+    S3Export(UpdateS3ExportIntegrationArgs),
 }
 
-/// Update log stream
+/// Update integration
 ///
-/// Update an existing log stream for the deployment. Omit a field to keep the
+/// Update an existing integration for the deployment. Omit a field to keep the
 /// existing value, and use `null` to unset a field.
 #[utoipa::path(
-    post,
-    path = "/update_log_stream/{id}",
-    tag = "Log Streams",
+    patch,
+    path = "/integrations/{id}",
+    tag = "Integrations",
     responses((status = 200)),
     params(
-        ("id" = String, Path, description = "id of the log stream to update"),
+        ("id" = String, Path, description = "id of the integration to update"),
     ),
     security(
         ("Deploy Key" = []),
@@ -1402,27 +1465,32 @@ pub enum UpdateLogStreamArgs {
         ("OAuth Project Token" = []),
     ),
 )]
-pub async fn update_log_stream(
+pub async fn update_integration(
     MtState(st): MtState<LocalAppState>,
     ExtractIdentity(identity): ExtractIdentity,
     ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
     Path(id): Path<String>,
-    Json(args): Json<UpdateLogStreamArgs>,
+    Json(args): Json<UpdateIntegrationArgs>,
 ) -> Result<impl IntoResponse, HttpResponseError> {
     identity.require_operation(keybroker::DeploymentOp::WriteIntegrations)?;
 
-    let LogSinkWithId {
-        config: sink_config,
+    let IntegrationWithId {
+        config: integration_config,
         ..
-    } = st.application.must_get_log_sink_by_id(&id).await?;
-    if matches!(&sink_config, SinkConfig::S3Export(_)) {
+    } = st.application.must_get_integration_by_id(&id).await?;
+    if matches!(&integration_config, IntegrationConfig::S3Export(_)) {
         identity.require_operation(keybroker::DeploymentOp::ViewData)?;
     }
-    ensure_integration_allowed(&st.application, &identity, &sink_config.sink_type()).await?;
+    ensure_integration_allowed(
+        &st.application,
+        &identity,
+        &integration_config.integration_type(),
+    )
+    .await?;
 
-    match sink_config {
-        SinkConfig::Datadog(existing_config) => {
-            let UpdateLogStreamArgs::Datadog(update_args) = args else {
+    match integration_config {
+        IntegrationConfig::Datadog(existing_config) => {
+            let UpdateIntegrationArgs::Datadog(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update a Datadog log stream with arguments for a different log stream \
@@ -1448,16 +1516,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::Datadog(config),
+                    IntegrationConfig::Datadog(config),
                 )
                 .await?;
         },
-        SinkConfig::Webhook(existing_config) => {
-            let UpdateLogStreamArgs::Webhook(update_args) = args else {
+        IntegrationConfig::Webhook(existing_config) => {
+            let UpdateIntegrationArgs::Webhook(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update a Webhook log stream with arguments for a different log stream \
@@ -1487,16 +1555,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::Webhook(config),
+                    IntegrationConfig::Webhook(config),
                 )
                 .await?;
         },
-        SinkConfig::Axiom(existing_config) => {
-            let UpdateLogStreamArgs::Axiom(update_args) = args else {
+        IntegrationConfig::Axiom(existing_config) => {
+            let UpdateIntegrationArgs::Axiom(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update an Axiom log stream with arguments for a different log stream \
@@ -1536,16 +1604,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::Axiom(config),
+                    IntegrationConfig::Axiom(config),
                 )
                 .await?;
         },
-        SinkConfig::Sentry(existing_config) => {
-            let UpdateLogStreamArgs::Sentry(update_args) = args else {
+        IntegrationConfig::Sentry(existing_config) => {
+            let UpdateIntegrationArgs::Sentry(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update a Sentry log stream with arguments for a different log stream \
@@ -1573,16 +1641,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::Sentry(config),
+                    IntegrationConfig::Sentry(config),
                 )
                 .await?;
         },
-        SinkConfig::PostHogLogs(existing_config) => {
-            let UpdateLogStreamArgs::PostHogLogs(update_args) = args else {
+        IntegrationConfig::PostHogLogs(existing_config) => {
+            let UpdateIntegrationArgs::PostHogLogs(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update a PostHog Logs log stream with arguments for a different log \
@@ -1611,16 +1679,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::PostHogLogs(config),
+                    IntegrationConfig::PostHogLogs(config),
                 )
                 .await?;
         },
-        SinkConfig::PostHogErrorTracking(existing_config) => {
-            let UpdateLogStreamArgs::PostHogErrorTracking(update_args) = args else {
+        IntegrationConfig::PostHogErrorTracking(existing_config) => {
+            let UpdateIntegrationArgs::PostHogErrorTracking(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update a PostHog Error Tracking log stream with arguments for a \
@@ -1643,16 +1711,16 @@ pub async fn update_log_stream(
             };
 
             st.application
-                .patch_log_sink_config(
+                .patch_integration_config(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::PostHogErrorTracking(config),
+                    IntegrationConfig::PostHogErrorTracking(config),
                 )
                 .await?;
         },
-        SinkConfig::S3Export(existing_config) => {
-            let UpdateLogStreamArgs::S3Export(update_args) = args else {
+        IntegrationConfig::S3Export(existing_config) => {
+            let UpdateIntegrationArgs::S3Export(update_args) = args else {
                 return Err(anyhow::anyhow!(ErrorMetadata::bad_request(
                     "LogStreamTypeMismatch",
                     "Cannot update an S3 export integration with arguments for a different \
@@ -1705,11 +1773,11 @@ pub async fn update_log_stream(
             // edit cannot hide a failure.
             let credentials_changed = config.credentials != existing_config.credentials;
             st.application
-                .patch_log_sink_config_and_status(
+                .patch_integration_config_and_status(
                     identity.clone(),
                     request_metadata.clone(),
                     &id,
-                    SinkConfig::S3Export(config),
+                    IntegrationConfig::S3Export(config),
                     credentials_changed,
                 )
                 .await?;
@@ -1724,10 +1792,191 @@ pub async fn update_log_stream(
         },
     }
 
-    // Reset the log sink status to Pending so that it retries verification
-    st.application.reset_log_sink_to_pending(&id).await?;
+    // Reset the integration status to Pending so that it retries verification
+    st.application.reset_integration_to_pending(&id).await?;
 
     Ok(StatusCode::OK)
+}
+
+/// List log streams
+///
+/// List configs for all existing log streams in a deployment.
+#[utoipa::path(
+    get,
+    path = "/list_log_streams",
+    tag = "Log Streams",
+    responses((status = 200, body = Vec<IntegrationResponse>)),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn list_log_streams(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    list_integrations(MtState(st), ExtractIdentity(identity)).await
+}
+
+/// Get log stream
+///
+/// Get the config for a specific log stream by id.
+#[utoipa::path(
+    get,
+    path = "/get_log_stream/{id}",
+    tag = "Log Streams",
+    responses((status = 200, body = IntegrationResponse)),
+    params(
+        ("id" = String, Path, description = "id of the log stream to retrieve"),
+    ),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn get_log_stream(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    get_integration(MtState(st), ExtractIdentity(identity), Path(id)).await
+}
+
+/// Create log stream
+///
+/// Create a new log stream for the deployment. Errors if a log stream of the
+/// given type already exists.
+#[utoipa::path(
+    post,
+    path = "/create_log_stream",
+    tag = "Log Streams",
+    responses((status = 200, body = CreateIntegrationResponse)),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn create_log_stream(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+    ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
+    Json(args): Json<CreateIntegrationArgs>,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    create_integration(
+        MtState(st),
+        ExtractIdentity(identity),
+        ExtractRequestMetadata(request_metadata),
+        Json(args),
+    )
+    .await
+}
+
+/// Update log stream
+///
+/// Update an existing log stream for the deployment. Omit a field to keep the
+/// existing value, and use `null` to unset a field.
+#[utoipa::path(
+    post,
+    path = "/update_log_stream/{id}",
+    tag = "Log Streams",
+    responses((status = 200)),
+    params(
+        ("id" = String, Path, description = "id of the log stream to update"),
+    ),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn update_log_stream(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+    ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
+    Path(id): Path<String>,
+    Json(args): Json<UpdateIntegrationArgs>,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    update_integration(
+        MtState(st),
+        ExtractIdentity(identity),
+        ExtractRequestMetadata(request_metadata),
+        Path(id),
+        Json(args),
+    )
+    .await
+}
+
+/// Delete log stream
+///
+/// Delete the deployment's log stream with the given id.
+#[utoipa::path(
+    post,
+    path = "/delete_log_stream/{id}",
+    tag = "Log Streams",
+    responses((status = 200)),
+    params(
+        ("id" = String, Path, description = "id of the log stream to delete"),
+    ),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn delete_log_stream(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+    ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    delete_integration(
+        MtState(st),
+        ExtractIdentity(identity),
+        ExtractRequestMetadata(request_metadata),
+        Path(id),
+    )
+    .await
+}
+
+/// Rotate webhook log stream secret
+///
+/// Rotate the secret for the webhook log stream.
+#[utoipa::path(
+    post,
+    path = "/rotate_webhook_secret/{id}",
+    tag = "Log Streams",
+    responses((status = 200, body = RotateIntegrationSecretResponse)),
+    params(
+        ("id" = String, Path, description = "id of the webhook log stream for which to rotate the secret"),
+    ),
+    security(
+        ("Deploy Key" = []),
+        ("OAuth Team Token" = []),
+        ("Team Token" = []),
+        ("OAuth Project Token" = []),
+    ),
+)]
+pub async fn rotate_webhook_secret(
+    MtState(st): MtState<LocalAppState>,
+    ExtractIdentity(identity): ExtractIdentity,
+    ExtractRequestMetadata(request_metadata): ExtractRequestMetadata,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, HttpResponseError> {
+    rotate_integration_webhook_secret(
+        MtState(st),
+        ExtractIdentity(identity),
+        ExtractRequestMetadata(request_metadata),
+        Path(id),
+    )
+    .await
 }
 
 pub fn platform_router<S>() -> OpenApiRouter<S>
@@ -1736,6 +1985,12 @@ where
     S: Clone + Send + Sync + 'static,
 {
     OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(rotate_integration_webhook_secret))
+        .routes(utoipa_axum::routes!(delete_integration))
+        .routes(utoipa_axum::routes!(update_integration))
+        .routes(utoipa_axum::routes!(create_integration))
+        .routes(utoipa_axum::routes!(get_integration))
+        .routes(utoipa_axum::routes!(list_integrations))
         .routes(utoipa_axum::routes!(list_log_streams))
         .routes(utoipa_axum::routes!(get_log_stream))
         .routes(utoipa_axum::routes!(delete_log_stream))

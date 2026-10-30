@@ -16,7 +16,7 @@ use common::{
     },
 };
 use maplit::btreemap;
-use model::log_sinks::types::sentry::{
+use model::integrations::types::sentry::{
     ExceptionFormatVersion,
     SentryConfig,
 };
@@ -40,15 +40,15 @@ use tokio::sync::mpsc;
 
 use crate::{
     consts,
-    sinks::utils::{
+    integrations::utils::{
         build_event_batches,
-        SinkFilter,
+        IntegrationFilter,
     },
-    LogSinkClient,
+    IntegrationClient,
     LoggingDeploymentMetadata,
 };
 
-pub(crate) struct SentrySink {
+pub(crate) struct SentryIntegration {
     sentry_client: sentry::Client,
     events_receiver: mpsc::Receiver<Vec<Arc<LogEvent>>>,
     backoff: Backoff,
@@ -56,16 +56,16 @@ pub(crate) struct SentrySink {
     config: SentryConfig,
 }
 
-impl SentrySink {
+impl SentryIntegration {
     pub async fn start<RT: Runtime>(
         runtime: RT,
         config: SentryConfig,
         transport: Arc<dyn TransportFactory>,
         deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         should_verify: bool,
-    ) -> anyhow::Result<LogSinkClient> {
-        tracing::info!("Starting SentrySink");
-        let (tx, rx) = mpsc::channel(consts::SENTRY_SINK_EVENTS_BUFFER_SIZE);
+    ) -> anyhow::Result<IntegrationClient> {
+        tracing::info!("Starting SentryIntegration");
+        let (tx, rx) = mpsc::channel(consts::SENTRY_INTEGRATION_EVENTS_BUFFER_SIZE);
 
         let sentry_client = sentry::Client::with_options(ClientOptions {
             dsn: Some(config.dsn.clone().into_value()),
@@ -73,24 +73,26 @@ impl SentrySink {
             ..Default::default()
         });
         anyhow::ensure!(sentry_client.is_enabled());
-        let mut sink = Self {
+        let mut integration = Self {
             sentry_client,
             events_receiver: rx,
             backoff: Backoff::new(
-                consts::SENTRY_SINK_INITIAL_BACKOFF,
-                consts::SENTRY_SINK_MAX_BACKOFF,
+                consts::SENTRY_INTEGRATION_INITIAL_BACKOFF,
+                consts::SENTRY_INTEGRATION_MAX_BACKOFF,
             ),
             deployment_metadata,
             config,
         };
 
         if should_verify {
-            sink.verify_creds().await?;
-            tracing::info!("SentrySink verified!");
+            integration.verify_creds().await?;
+            tracing::info!("SentryIntegration verified!");
         }
 
-        let handle = Arc::new(Mutex::new(runtime.spawn("sentry_sink", sink.go())));
-        let client = LogSinkClient {
+        let handle = Arc::new(Mutex::new(
+            runtime.spawn("sentry_integration", integration.go()),
+        ));
+        let client = IntegrationClient {
             _handle: handle,
             events_sender: tx,
         };
@@ -109,21 +111,21 @@ impl SentrySink {
             match self.events_receiver.recv().await {
                 None => {
                     // The sender was closed, event loop should shutdown
-                    tracing::warn!("Stopping SentrySink. Sender was closed.");
+                    tracing::warn!("Stopping SentryIntegration. Sender was closed.");
                     return;
                 },
                 Some(ev) => {
                     // Split events into batches
                     let batches = build_event_batches(
                         ev,
-                        consts::SENTRY_SINK_MAX_LOGS_PER_BATCH,
-                        &SinkFilter::OnlyExceptions,
+                        consts::SENTRY_INTEGRATION_MAX_LOGS_PER_BATCH,
+                        &IntegrationFilter::OnlyExceptions,
                     );
 
                     // Process each batch and send to Sentry
                     for batch in batches {
                         if let Err(mut e) = self.process_events(batch).await {
-                            tracing::error!("Error emitting log event batch in SentrySink.");
+                            tracing::error!("Error emitting log event batch in SentryIntegration.");
                             report_error(&mut e).await;
                         } else {
                             self.backoff.reset();
@@ -135,7 +137,7 @@ impl SentrySink {
     }
 
     async fn process_events(&mut self, events: Vec<Arc<LogEvent>>) -> anyhow::Result<()> {
-        crate::metrics::sentry_sink_logs_received(events.len());
+        crate::metrics::sentry_integration_logs_received(events.len());
 
         let num_exceptions = events.len();
         if num_exceptions == 0 {
@@ -274,7 +276,7 @@ impl SentrySink {
             self.sentry_client.capture_event(sentry_event, None);
         }
 
-        crate::metrics::sentry_sink_logs_sent(num_exceptions);
+        crate::metrics::sentry_integration_logs_sent(num_exceptions);
         Ok(())
     }
 }

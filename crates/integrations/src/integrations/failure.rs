@@ -3,18 +3,18 @@ use common::{
     http::HttpResponseStream,
 };
 use http::StatusCode;
-use model::log_sinks::types::SinkType;
+use model::integrations::types::IntegrationType;
 
 use crate::metrics;
 
-/// Why an outbound request from a log sink to a customer's endpoint failed.
+/// Why an outbound request from an integration to a customer's endpoint failed.
 ///
-/// Deliberately not an `ErrorMetadata`: a sink is a background egress worker,
-/// so there is no inbound request to fail, no status code to return, and
-/// nothing to propagate into JS out of a syscall. See
+/// Deliberately not an `ErrorMetadata`: an integration is a background egress
+/// worker, so there is no inbound request to fail, no status code to return,
+/// and nothing to propagate into JS out of a syscall. See
 /// `ErrorMetadata::is_deterministic_user_error`.
 #[derive(Debug)]
-pub enum SinkEgressFailure {
+pub enum IntegrationEgressFailure {
     /// The endpoint returned a status that should not be retried within the
     /// current batch.
     Rejected { status: StatusCode },
@@ -22,7 +22,7 @@ pub enum SinkEgressFailure {
     Transient { description: String },
 }
 
-impl SinkEgressFailure {
+impl IntegrationEgressFailure {
     /// The retry budget ran out. `last` is the final attempt's failure, absent
     /// only if no attempt was made.
     pub fn retries_exhausted(attempts: usize, last: Option<Self>) -> Self {
@@ -37,7 +37,7 @@ impl SinkEgressFailure {
         matches!(self, Self::Rejected { .. })
     }
 
-    /// `outcome` label on the sink failure counters; a fixed set of two.
+    /// `outcome` label on the integration failure counters; a fixed set of two.
     pub fn outcome_label(&self) -> &'static str {
         match self {
             Self::Rejected { .. } => "rejected",
@@ -46,7 +46,7 @@ impl SinkEgressFailure {
     }
 }
 
-impl std::fmt::Display for SinkEgressFailure {
+impl std::fmt::Display for IntegrationEgressFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Rejected { status } => write!(f, "endpoint rejected the request with {status}"),
@@ -55,20 +55,20 @@ impl std::fmt::Display for SinkEgressFailure {
     }
 }
 
-impl std::error::Error for SinkEgressFailure {}
+impl std::error::Error for IntegrationEgressFailure {}
 
-/// Classify an outbound log-sink response without reading its body, which may
-/// contain customer data echoed by the endpoint.
-pub fn classify_sink_response(
+/// Classify an outbound log-integration response without reading its body,
+/// which may contain customer data echoed by the endpoint.
+pub fn classify_integration_response(
     response: anyhow::Result<HttpResponseStream>,
-) -> Result<(), SinkEgressFailure> {
+) -> Result<(), IntegrationEgressFailure> {
     let response = match response {
         Ok(response) => response,
         // Only the outermost message: the chain below it can name our egress
         // proxy, and this string can reach customers through startup failure
         // state without passing through `strip_pii`.
         Err(e) => {
-            return Err(SinkEgressFailure::Transient {
+            return Err(IntegrationEgressFailure::Transient {
                 description: format!("{e}"),
             });
         },
@@ -78,11 +78,11 @@ pub fn classify_sink_response(
         return Ok(());
     }
     if is_retryable(status) {
-        return Err(SinkEgressFailure::Transient {
+        return Err(IntegrationEgressFailure::Transient {
             description: format!("endpoint returned {status}"),
         });
     }
-    Err(SinkEgressFailure::Rejected { status })
+    Err(IntegrationEgressFailure::Rejected { status })
 }
 
 /// Retry 5xx responses within the current batch. Among 4xx responses, 408 and
@@ -99,18 +99,18 @@ fn is_retryable(status: StatusCode) -> bool {
         )
 }
 
-/// Handles a sink's failed batches: reports egress failures without sending
-/// them to Sentry, reports our own failures to Sentry, and holds the egress log
-/// line to one per run of failures.
-pub struct SinkFailureReporter {
-    sink_type: SinkType,
+/// Handles an integration's failed batches: reports egress failures without
+/// sending them to Sentry, reports our own failures to Sentry, and holds the
+/// egress log line to one per run of failures.
+pub struct IntegrationFailureReporter {
+    integration_type: IntegrationType,
     logged_since_success: bool,
 }
 
-impl SinkFailureReporter {
-    pub fn new(sink_type: SinkType) -> Self {
+impl IntegrationFailureReporter {
+    pub fn new(integration_type: IntegrationType) -> Self {
         Self {
-            sink_type,
+            integration_type,
             logged_since_success: false,
         }
     }
@@ -120,21 +120,24 @@ impl SinkFailureReporter {
     }
 
     pub async fn record_failure(&mut self, mut error: anyhow::Error) {
-        let Some(failure) = error.downcast_ref::<SinkEgressFailure>() else {
+        let Some(failure) = error.downcast_ref::<IntegrationEgressFailure>() else {
             tracing::error!(
-                "Error emitting log event batch in {} sink: {error:?}",
-                self.sink_type.as_str()
+                "Error emitting log event batch in {} integration: {error:?}",
+                self.integration_type.as_str()
             );
             report_error(&mut error).await;
             return;
         };
 
-        metrics::log_sink_egress_failure(self.sink_type.as_str(), failure.outcome_label());
+        metrics::integration_egress_failure(
+            self.integration_type.as_str(),
+            failure.outcome_label(),
+        );
         if !self.logged_since_success {
             self.logged_since_success = true;
             tracing::warn!(
-                "{} sink failed to emit a log event batch: {failure}",
-                self.sink_type.as_str(),
+                "{} integration failed to emit a log event batch: {failure}",
+                self.integration_type.as_str(),
             );
         }
     }

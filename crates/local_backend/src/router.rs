@@ -370,7 +370,7 @@ pub fn router(st: LocalAppState) -> Router {
             .merge(crate::deployment_info::platform_router())
             .merge(crate::usage_limits::platform_router())
             .merge(crate::canonical_urls::platform_router())
-            .merge(crate::log_sinks::platform_router())
+            .merge(crate::integrations::platform_router())
             .merge(crate::deployment_state::platform_router())
             // Streaming export ("data sync") API at /api/v1/data/sync.
             .merge(crate::streaming_export::platform_router())

@@ -4,20 +4,20 @@ use value::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MockSinkConfig {}
+pub struct MockIntegrationConfig {}
 
-impl TryFrom<ConvexObject> for MockSinkConfig {
+impl TryFrom<ConvexObject> for MockIntegrationConfig {
     type Error = anyhow::Error;
 
     fn try_from(_value: ConvexObject) -> Result<Self, Self::Error> {
-        Ok(MockSinkConfig {})
+        Ok(MockIntegrationConfig {})
     }
 }
 
-impl TryFrom<MockSinkConfig> for ConvexObject {
+impl TryFrom<MockIntegrationConfig> for ConvexObject {
     type Error = anyhow::Error;
 
-    fn try_from(_value: MockSinkConfig) -> Result<Self, Self::Error> {
+    fn try_from(_value: MockIntegrationConfig) -> Result<Self, Self::Error> {
         obj!(
             "type" => "mock",
         )

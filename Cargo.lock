@@ -453,10 +453,10 @@ dependencies = [
  "http_client",
  "humansize",
  "indexing",
+ "integrations",
  "isolate",
  "itertools 0.14.0",
  "keybroker",
- "log_streaming",
  "lru 0.18.5",
  "maplit",
  "metrics",
@@ -5932,6 +5932,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
+name = "integrations"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-lc-rs",
+ "bytes",
+ "chrono",
+ "common",
+ "const-hex",
+ "convex_macro",
+ "database",
+ "errors",
+ "futures",
+ "http 1.5.0",
+ "keybroker",
+ "maplit",
+ "metrics",
+ "model",
+ "parking_lot",
+ "reqwest 0.13.4",
+ "runtime",
+ "sentry",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "usage_tracking",
+]
+
+[[package]]
 name = "interval_map"
 version = "0.1.0"
 dependencies = [
@@ -6790,38 +6822,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
-]
-
-[[package]]
-name = "log_streaming"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "aws-lc-rs",
- "bytes",
- "chrono",
- "common",
- "const-hex",
- "convex_macro",
- "database",
- "errors",
- "futures",
- "http 1.5.0",
- "keybroker",
- "maplit",
- "metrics",
- "model",
- "parking_lot",
- "reqwest 0.13.4",
- "runtime",
- "sentry",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "usage_tracking",
 ]
 
 [[package]]

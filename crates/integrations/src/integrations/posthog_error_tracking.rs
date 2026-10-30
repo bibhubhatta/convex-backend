@@ -26,7 +26,7 @@ use http::{
     header::CONTENT_TYPE,
     HeaderMap,
 };
-use model::log_sinks::types::posthog_logs::DEFAULT_POSTHOG_HOST;
+use model::integrations::types::posthog_logs::DEFAULT_POSTHOG_HOST;
 use parking_lot::Mutex;
 use serde_json::{
     json,
@@ -36,25 +36,25 @@ use tokio::sync::mpsc;
 
 use crate::{
     consts,
-    metrics::posthog_et_sink_network_egress_bytes,
-    sinks::{
+    integrations::{
         failure::{
-            classify_sink_response,
-            SinkEgressFailure,
-            SinkFailureReporter,
+            classify_integration_response,
+            IntegrationEgressFailure,
+            IntegrationFailureReporter,
         },
         utils::{
             self,
             build_event_batches,
             EgressCounter,
-            SinkFilter,
+            IntegrationFilter,
         },
     },
-    LogSinkClient,
+    metrics::posthog_et_integration_network_egress_bytes,
+    IntegrationClient,
     LoggingDeploymentMetadata,
 };
 
-pub struct PostHogErrorTrackingSink<RT: Runtime> {
+pub struct PostHogErrorTrackingIntegration<RT: Runtime> {
     runtime: RT,
     capture_url: reqwest::Url,
     api_key: String,
@@ -63,26 +63,26 @@ pub struct PostHogErrorTrackingSink<RT: Runtime> {
     backoff: Backoff,
     deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
     egress_counter: EgressCounter,
-    failure_reporter: SinkFailureReporter,
+    failure_reporter: IntegrationFailureReporter,
 }
 
-impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
+impl<RT: Runtime> PostHogErrorTrackingIntegration<RT> {
     pub async fn start(
         runtime: RT,
-        config: model::log_sinks::types::posthog_error_tracking::PostHogErrorTrackingConfig,
+        config: model::integrations::types::posthog_error_tracking::PostHogErrorTrackingConfig,
         fetch_client: Arc<dyn FetchClient>,
         deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         egress_counter: EgressCounter,
-        failure_reporter: SinkFailureReporter,
+        failure_reporter: IntegrationFailureReporter,
         should_verify: bool,
-    ) -> anyhow::Result<LogSinkClient> {
-        tracing::info!("Starting PostHogErrorTrackingSink");
-        let (tx, rx) = mpsc::channel(consts::POSTHOG_ET_SINK_EVENTS_BUFFER_SIZE);
+    ) -> anyhow::Result<IntegrationClient> {
+        tracing::info!("Starting PostHogErrorTrackingIntegration");
+        let (tx, rx) = mpsc::channel(consts::POSTHOG_ET_INTEGRATION_EVENTS_BUFFER_SIZE);
 
         let host = config.host.as_deref().unwrap_or(DEFAULT_POSTHOG_HOST);
         let capture_url = format!("{host}/i/v0/e/");
 
-        let mut sink = Self {
+        let mut integration = Self {
             runtime: runtime.clone(),
             deployment_metadata,
             capture_url: capture_url.parse()?,
@@ -90,20 +90,22 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
             fetch_client,
             events_receiver: rx,
             backoff: Backoff::new(
-                consts::POSTHOG_ET_SINK_INITIAL_BACKOFF,
-                consts::POSTHOG_ET_SINK_MAX_BACKOFF,
+                consts::POSTHOG_ET_INTEGRATION_INITIAL_BACKOFF,
+                consts::POSTHOG_ET_INTEGRATION_MAX_BACKOFF,
             ),
             egress_counter,
             failure_reporter,
         };
 
         if should_verify {
-            sink.verify_creds().await?;
-            tracing::info!("PostHogErrorTrackingSink verified!");
+            integration.verify_creds().await?;
+            tracing::info!("PostHogErrorTrackingIntegration verified!");
         }
 
-        let handle = Arc::new(Mutex::new(runtime.spawn("posthog_et_sink", sink.go())));
-        let client = LogSinkClient {
+        let handle = Arc::new(Mutex::new(
+            runtime.spawn("posthog_et_integration", integration.go()),
+        ));
+        let client = IntegrationClient {
             _handle: handle,
             events_sender: tx,
         };
@@ -135,21 +137,21 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
             })
             .await;
 
-        classify_sink_response(response).context("Failed to verify PostHog project token")
+        classify_integration_response(response).context("Failed to verify PostHog project token")
     }
 
     async fn go(mut self) {
         loop {
             match self.events_receiver.recv().await {
                 None => {
-                    tracing::warn!("Stopping PostHogErrorTrackingSink. Sender was closed.");
+                    tracing::warn!("Stopping PostHogErrorTrackingIntegration. Sender was closed.");
                     return;
                 },
                 Some(ev) => {
                     let batches = build_event_batches(
                         ev,
-                        consts::POSTHOG_ET_SINK_MAX_LOGS_PER_BATCH,
-                        &SinkFilter::OnlyExceptions,
+                        consts::POSTHOG_ET_INTEGRATION_MAX_LOGS_PER_BATCH,
+                        &IntegrationFilter::OnlyExceptions,
                     );
 
                     for batch in batches {
@@ -167,7 +169,7 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
     }
 
     async fn process_events(&mut self, events: Vec<Arc<LogEvent>>) -> anyhow::Result<()> {
-        crate::metrics::posthog_et_sink_logs_received(events.len());
+        crate::metrics::posthog_et_integration_logs_received(events.len());
 
         if events.is_empty() {
             return Ok(());
@@ -303,7 +305,7 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
         });
 
         self.send_batch(serde_json::to_vec(&payload)?).await?;
-        crate::metrics::posthog_et_sink_logs_sent(batch_size);
+        crate::metrics::posthog_et_integration_logs_sent(batch_size);
 
         Ok(())
     }
@@ -315,7 +317,7 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
         let batch_json = Bytes::from(batch_json);
 
         let mut last_failure = None;
-        for _ in 0..consts::POSTHOG_ET_SINK_MAX_REQUEST_ATTEMPTS {
+        for _ in 0..consts::POSTHOG_ET_INTEGRATION_MAX_REQUEST_ATTEMPTS {
             let batch_json = batch_json.clone();
             let response = self
                 .fetch_client
@@ -330,20 +332,20 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
 
             if let Ok(r) = &response {
                 let num_bytes_egress = r.request_size.load(Ordering::Relaxed);
-                utils::track_log_sink_bandwidth(
+                utils::track_integration_bandwidth(
                     num_bytes_egress,
                     &self.egress_counter,
-                    posthog_et_sink_network_egress_bytes,
+                    posthog_et_integration_network_egress_bytes,
                 );
             }
 
-            match classify_sink_response(response) {
+            match classify_integration_response(response) {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.is_rejected() => anyhow::bail!(failure),
                 Err(failure) => {
                     let delay = self.backoff.fail(&mut self.runtime.rng());
                     tracing::warn!(
-                        "Failed to send in PostHog Error Tracking sink: {failure}. Waiting \
+                        "Failed to send in PostHog Error Tracking integration: {failure}. Waiting \
                          {delay:?} before retrying."
                     );
                     last_failure = Some(failure);
@@ -352,8 +354,8 @@ impl<RT: Runtime> PostHogErrorTrackingSink<RT> {
             }
         }
 
-        anyhow::bail!(SinkEgressFailure::retries_exhausted(
-            consts::POSTHOG_ET_SINK_MAX_REQUEST_ATTEMPTS,
+        anyhow::bail!(IntegrationEgressFailure::retries_exhausted(
+            consts::POSTHOG_ET_INTEGRATION_MAX_REQUEST_ATTEMPTS,
             last_failure,
         ))
     }

@@ -2,8 +2,8 @@
 #![feature(future_join)]
 #![feature(never_type)]
 pub mod consts;
+pub mod integrations;
 mod metrics;
-pub mod sinks;
 
 use std::{
     collections::BTreeMap,
@@ -57,17 +57,23 @@ use futures::{
     select_biased,
     FutureExt,
 };
+use integrations::{
+    local_integration::LocalIntegration,
+    posthog_error_tracking::PostHogErrorTrackingIntegration,
+    posthog_logs::PostHogLogsIntegration,
+    sentry::SentryIntegration,
+};
 use keybroker::Identity;
 use model::{
     backend_info::BackendInfoModel,
-    log_sinks::{
+    integrations::{
         types::{
-            LogSinksRow,
-            SinkConfig,
-            SinkState,
-            SinkType,
+            IntegrationConfig,
+            IntegrationDocument,
+            IntegrationState,
+            IntegrationType,
         },
-        LogSinksModel,
+        IntegrationsModel,
     },
 };
 use parking_lot::{
@@ -76,34 +82,28 @@ use parking_lot::{
 };
 use sentry::TransportFactory;
 use serde::Serialize;
-use sinks::{
-    local_sink::LocalSink,
-    posthog_error_tracking::PostHogErrorTrackingSink,
-    posthog_logs::PostHogLogsSink,
-    sentry::SentrySink,
-};
 use tokio::sync::mpsc;
 use usage_tracking::UsageCounter;
 
-use crate::sinks::{
-    axiom::AxiomSink,
-    datadog::DatadogSink,
+use crate::integrations::{
+    axiom::AxiomIntegration,
+    datadog::DatadogIntegration,
     failure::{
-        SinkEgressFailure,
-        SinkFailureReporter,
+        IntegrationEgressFailure,
+        IntegrationFailureReporter,
     },
     utils::EgressCounter,
-    webhook::WebhookSink,
+    webhook::WebhookIntegration,
 };
 
 /// Public worker for the LogManager.
 ///
-/// See `log_streaming/README.md` for more info.
+/// See `integrations/README.md` for more info.
 #[derive(Clone)]
 pub struct LogManagerClient {
     handle: Arc<Mutex<Option<Box<dyn SpawnHandle>>>>,
     event_sender: mpsc::Sender<Arc<LogEvent>>,
-    active_sinks_count: Arc<AtomicUsize>,
+    active_integrations_count: Arc<AtomicUsize>,
     entitlement_enabled: Arc<AtomicBool>,
 }
 
@@ -143,8 +143,8 @@ impl LogManagerClient {
         self.entitlement_enabled.store(enabled, Ordering::Relaxed)
     }
 
-    fn get_active_sinks_count(&self) -> usize {
-        self.active_sinks_count.load(Ordering::Relaxed)
+    fn get_active_integrations_count(&self) -> usize {
+        self.active_integrations_count.load(Ordering::Relaxed)
     }
 
     pub fn is_entitlement_enabled(&self) -> bool {
@@ -152,7 +152,7 @@ impl LogManagerClient {
     }
 
     fn is_active(&self) -> bool {
-        self.is_entitlement_enabled() && self.get_active_sinks_count() > 0
+        self.is_entitlement_enabled() && self.get_active_integrations_count() > 0
     }
 }
 
@@ -167,7 +167,7 @@ impl LogSender for LogManagerClient {
     }
 
     fn send_logs(&self, logs: Vec<LogEvent>) {
-        // Only route to an active log sink
+        // Only route to an active integration
         if !self.is_active() {
             return;
         }
@@ -219,8 +219,8 @@ impl std::fmt::Display for SendLogBatchError {
 }
 
 /// The central abstraction for handling log events. This is responsible for
-/// forwarding logs to LogSinks. Ideally, any shared batching/aggregation logic
-/// is done here to deduplicate work at the LogSinks.
+/// forwarding logs to Integrations. Ideally, any shared batching/aggregation
+/// logic is done here to deduplicate work at the Integrations.
 ///
 /// This is also responsible for selective routing of LogEvents. In the future
 /// selective routing could be a feature we expose to customers but, for now, we
@@ -230,15 +230,15 @@ pub struct LogManager<RT: Runtime> {
     database: Database<RT>,
     fetch_client: Arc<dyn FetchClient>,
     sentry_transport: Arc<dyn TransportFactory>,
-    sinks: Arc<RwLock<BTreeMap<SinkType, LogSinkClient>>>,
+    integrations: Arc<RwLock<BTreeMap<IntegrationType, IntegrationClient>>>,
     event_receiver: mpsc::Receiver<Arc<LogEvent>>,
     /// Cloned sender for feeding log events back into the pipeline (e.g.,
-    /// LogStreamEgress events emitted by sinks).
+    /// LogStreamEgress events emitted by integrations).
     event_sender: mpsc::Sender<Arc<LogEvent>>,
     instance_name: String,
     deployment_region: Option<String>,
-    /// How many sinks are active right now?
-    active_sinks_count: Arc<AtomicUsize>,
+    /// How many integrations are active right now?
+    active_integrations_count: Arc<AtomicUsize>,
     usage_counter: usage_tracking::UsageCounter,
     egress_counter: EgressCounter,
 }
@@ -266,20 +266,20 @@ impl<RT: Runtime> LogManager<RT> {
     ) -> LogManagerClient {
         let (req_tx, req_rx) = mpsc::channel(*knobs::LOG_MANAGER_EVENT_RECV_BUFFER_SIZE);
 
-        let active_sinks_count = Arc::new(AtomicUsize::new(0));
+        let active_integrations_count = Arc::new(AtomicUsize::new(0));
         let egress_counter = EgressCounter::default();
         let worker = Self {
             runtime: runtime.clone(),
             database,
             fetch_client,
             sentry_transport,
-            // Sinks are populated from the `_log_sinks` system table on startup
-            sinks: Arc::new(RwLock::new(BTreeMap::new())),
+            // Integrations are populated from the `_log_sinks` system table on startup
+            integrations: Arc::new(RwLock::new(BTreeMap::new())),
             event_receiver: req_rx,
             event_sender: req_tx.clone(),
             instance_name,
             deployment_region,
-            active_sinks_count: active_sinks_count.clone(),
+            active_integrations_count: active_integrations_count.clone(),
             usage_counter,
             egress_counter,
         };
@@ -289,7 +289,7 @@ impl<RT: Runtime> LogManager<RT> {
         LogManagerClient {
             handle,
             event_sender: req_tx,
-            active_sinks_count,
+            active_integrations_count,
             entitlement_enabled,
         }
     }
@@ -312,19 +312,19 @@ impl<RT: Runtime> LogManager<RT> {
 
     async fn listen(&mut self) -> anyhow::Result<!> {
         tracing::info!("Starting listening for logs");
-        let sink_startup_worker_fut = Self::sink_startup_worker(
+        let integration_startup_worker_fut = Self::integration_startup_worker(
             &self.runtime,
             &self.database,
             self.fetch_client.clone(),
             self.sentry_transport.clone(),
-            &self.sinks,
+            &self.integrations,
             self.instance_name.clone(),
             self.deployment_region.clone(),
-            self.active_sinks_count.clone(),
+            self.active_integrations_count.clone(),
             self.egress_counter.clone(),
         )
         .fuse();
-        pin_mut!(sink_startup_worker_fut);
+        pin_mut!(integration_startup_worker_fut);
 
         let egress_emission_fut = Self::egress_emission_worker(
             &self.runtime,
@@ -336,13 +336,14 @@ impl<RT: Runtime> LogManager<RT> {
         pin_mut!(egress_emission_fut);
 
         let log_event_listener_fut =
-            Self::log_event_listener(&self.runtime, &mut self.event_receiver, &self.sinks).fuse();
+            Self::log_event_listener(&self.runtime, &mut self.event_receiver, &self.integrations)
+                .fuse();
         pin_mut!(log_event_listener_fut);
 
-        // We use select_biased! here to not starve sink_startup_worker.
+        // We use select_biased! here to not starve integration_startup_worker.
         // log_event_listener will usually be of a much higher throughput.
         select_biased! {
-            r = sink_startup_worker_fut => {
+            r = integration_startup_worker_fut => {
                 r?;
             },
             r = egress_emission_fut => {
@@ -354,17 +355,17 @@ impl<RT: Runtime> LogManager<RT> {
         }
     }
 
-    /// This aggregates logs by emitting logs to sinks if the receiving channel
-    /// is full or if a constant aggregation interval has passed.
+    /// This aggregates logs by emitting logs to integrations if the receiving
+    /// channel is full or if a constant aggregation interval has passed.
     ///
-    /// NOTE: aggregation could happen at the sink-level or at the
+    /// NOTE: aggregation could happen at the integration-level or at the
     /// manager-level, but we've decided to put it here for simplicity and
-    /// for slightly less overhead (no need to have timers at each sink).
-    /// This can just as easily be moved to sinks if required.
+    /// for slightly less overhead (no need to have timers at each integration).
+    /// This can just as easily be moved to integrations if required.
     async fn log_event_listener(
         runtime: &RT,
         rx: &mut mpsc::Receiver<Arc<LogEvent>>,
-        sinks: &Arc<RwLock<BTreeMap<SinkType, LogSinkClient>>>,
+        integrations: &Arc<RwLock<BTreeMap<IntegrationType, IntegrationClient>>>,
     ) -> anyhow::Result<!> {
         loop {
             // Accumulate events as they arrive until the batch is full or the
@@ -389,9 +390,9 @@ impl<RT: Runtime> LogManager<RT> {
             }
 
             if !drained_events.is_empty() {
-                // Route events to sinks
+                // Route events to integrations
                 metrics::log_manager_logs_received(drained_events.len());
-                Self::route_event_batch(drained_events, sinks)?;
+                Self::route_event_batch(drained_events, integrations)?;
             }
         }
     }
@@ -399,22 +400,24 @@ impl<RT: Runtime> LogManager<RT> {
     // Routing logic will eventually go here. For now, this is just a fanout.
     fn route_event_batch(
         events: Vec<Arc<LogEvent>>,
-        sinks: &Arc<RwLock<BTreeMap<SinkType, LogSinkClient>>>,
+        integrations: &Arc<RwLock<BTreeMap<IntegrationType, IntegrationClient>>>,
     ) -> anyhow::Result<()> {
-        let sinks = sinks.read();
-        sinks
+        let integrations = integrations.read();
+        integrations
             .iter()
             .map(|(ty, v)| (ty.clone(), v.events_sender.clone(), events.clone()))
             .try_for_each(|(ty, tx, events)| {
                 match tx.try_send(events) {
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         // No need to report metrics here, can calculate this drop amount by the
-                        // number of logs received metric for each sink
-                        tracing::info!("Sink receive buffer full for {ty:?}, dropping logs.");
+                        // number of logs received metric for each integration
+                        tracing::info!(
+                            "Integration receive buffer full for {ty:?}, dropping logs."
+                        );
                         Ok(())
                     },
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        anyhow::bail!("Sink receive buffer for {ty:?} closed unexpectedly.");
+                        anyhow::bail!("Integration receive buffer for {ty:?} closed unexpectedly.");
                     },
                     Ok(()) => Ok(()),
                 }
@@ -423,29 +426,30 @@ impl<RT: Runtime> LogManager<RT> {
         Ok(())
     }
 
-    /// Subscribes to LOG_SINKS_TABLE and attempts to drive forward the
-    /// state machine described in `SinkState`.
+    /// Subscribes to INTEGRATIONS_TABLE and attempts to drive forward the
+    /// state machine described in `IntegrationState`.
     ///
     /// Specifically the following logic is implemented
-    /// - A sink in `Pending` state should be started and moved to the `Active`
-    ///   state. Starting a sink involves invoking its `start` method and
-    ///   storing the resulting LogSinkClient in the LogManager's local sink_map
-    ///   so that logs will start routing.
-    /// - If startup of a `Pending` sink fails, it sets its state to `Failed`,
-    ///   otherwise it is set to `Active`.
-    /// - A sink that is `Active` should be started. This can be violated on
-    ///   backend restart so this is handled by setting the sink state to
-    ///   `Pending` again.
-    /// - A sink in `Tombstoned` state should have its corresponding row removed
-    async fn sink_startup_worker(
+    /// - A integration in `Pending` state should be started and moved to the
+    ///   `Active` state. Starting an integration involves invoking its `start`
+    ///   method and storing the resulting IntegrationClient in the LogManager's
+    ///   local integration_map so that logs will start routing.
+    /// - If startup of a `Pending` integration fails, it sets its state to
+    ///   `Failed`, otherwise it is set to `Active`.
+    /// - A integration that is `Active` should be started. This can be violated
+    ///   on backend restart so this is handled by setting the integration state
+    ///   to `Pending` again.
+    /// - A integration in `Tombstoned` state should have its corresponding
+    ///   document removed
+    async fn integration_startup_worker(
         runtime: &RT,
         database: &Database<RT>,
         fetch_client: Arc<dyn FetchClient>,
         sentry_transport: Arc<dyn TransportFactory>,
-        sinks: &Arc<RwLock<BTreeMap<SinkType, LogSinkClient>>>,
+        integrations: &Arc<RwLock<BTreeMap<IntegrationType, IntegrationClient>>>,
         instance_name: String,
         deployment_region: Option<String>,
-        active_sinks_count: Arc<AtomicUsize>,
+        active_integrations_count: Arc<AtomicUsize>,
         egress_counter: EgressCounter,
     ) -> anyhow::Result<!> {
         // Deployment_type is populated within the loop based on a subscription
@@ -472,16 +476,16 @@ impl<RT: Runtime> LogManager<RT> {
                 metadata_guard.project_slug = bi.project_slug.clone();
             }
 
-            let mut log_sinks_model = LogSinksModel::new(&mut tx);
-            let sink_rows = log_sinks_model.get_all().await?;
-            Self::sink_startup_worker_once(
+            let mut integrations_model = IntegrationsModel::new(&mut tx);
+            let integration_documents = integrations_model.get_all().await?;
+            Self::integration_startup_worker_once(
                 runtime,
                 database,
                 fetch_client.clone(),
                 sentry_transport.clone(),
-                sink_rows,
-                sinks,
-                active_sinks_count.clone(),
+                integration_documents,
+                integrations,
+                active_integrations_count.clone(),
                 metadata.clone(),
                 egress_counter.clone(),
             )
@@ -493,38 +497,47 @@ impl<RT: Runtime> LogManager<RT> {
         }
     }
 
-    async fn sink_startup_worker_once(
+    async fn integration_startup_worker_once(
         runtime: &RT,
         database: &Database<RT>,
         fetch_client: Arc<dyn FetchClient>,
         sentry_transport: Arc<dyn TransportFactory>,
-        sink_rows: Vec<ParsedDocument<LogSinksRow>>,
-        sinks: &Arc<RwLock<BTreeMap<SinkType, LogSinkClient>>>,
-        active_sinks_count: Arc<AtomicUsize>,
+        integration_documents: Vec<ParsedDocument<IntegrationDocument>>,
+        integrations: &Arc<RwLock<BTreeMap<IntegrationType, IntegrationClient>>>,
+        active_integrations_count: Arc<AtomicUsize>,
         metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         egress_counter: EgressCounter,
     ) -> anyhow::Result<()> {
-        let (pending_sinks, inactive_sinks, tombstoned_sinks) = {
-            let sinks = sinks.read();
-            let pending_sinks: Vec<_> = sink_rows
+        let (pending_integrations, inactive_integrations, tombstoned_integrations) = {
+            let integrations = integrations.read();
+            let pending_integrations: Vec<_> = integration_documents
                 .iter()
-                .filter(|row| matches!(row.status, SinkState::Pending | SinkState::Restarting))
-                .cloned()
-                .collect();
-            let inactive_sinks: Vec<_> = sink_rows
-                .iter()
-                .filter(|row| {
-                    matches!(row.status, SinkState::Active)
-                        && !sinks.contains_key(&row.config.sink_type())
+                .filter(|document| {
+                    matches!(
+                        document.status,
+                        IntegrationState::Pending | IntegrationState::Restarting
+                    )
                 })
                 .cloned()
                 .collect();
-            let tombstoned_sinks: Vec<_> = sink_rows
+            let inactive_integrations: Vec<_> = integration_documents
                 .iter()
-                .filter(|row| matches!(row.status, SinkState::Tombstoned))
+                .filter(|document| {
+                    matches!(document.status, IntegrationState::Active)
+                        && !integrations.contains_key(&document.config.integration_type())
+                })
                 .cloned()
                 .collect();
-            (pending_sinks, inactive_sinks, tombstoned_sinks)
+            let tombstoned_integrations: Vec<_> = integration_documents
+                .iter()
+                .filter(|document| matches!(document.status, IntegrationState::Tombstoned))
+                .cloned()
+                .collect();
+            (
+                pending_integrations,
+                inactive_integrations,
+                tombstoned_integrations,
+            )
         };
 
         let mut tx = database.begin(Identity::system()).await?;
@@ -533,58 +546,67 @@ impl<RT: Runtime> LogManager<RT> {
             .is_custom_audit_logs_in_log_streams_allowed()
             .await?;
 
-        // Order is important! Handle any `Tombstoned` rows first in case they were
-        // replaced with a new LogSink for the same provider that's in state `Pending`.
+        // Order is important! Handle any `Tombstoned` documents first in case they were
+        // replaced with a new Integration for the same provider that's in state
+        // `Pending`.
         //
         // We could potentially drop events between removing the `Tombstoned` and
         // activating the new `Pending` provider, but this would happen
         // with the user deleting + re-adding the provider manually.
         //
-        // There also might be multiple `Tombstoned` sinks in the case of multiple
-        // updates to a sink before we reach this loop to clean them up.
+        // There also might be multiple `Tombstoned` integrations in the case of
+        // multiple updates to an integration before we reach this loop to clean
+        // them up.
 
-        // Delete `Tombstoned` rows
+        // Delete `Tombstoned` documents
         tracing::info!(
-            "Found {:} sink(s) in `Tombstoned` state",
-            tombstoned_sinks.len()
+            "Found {:} integration(s) in `Tombstoned` state",
+            tombstoned_integrations.len()
         );
-        for row in tombstoned_sinks {
-            tracing::info!("Deleting row {}", row.config);
+        for document in tombstoned_integrations {
+            tracing::info!("Deleting document {}", document.config);
             SystemMetadataModel::new_global(&mut tx)
-                .delete(row.id())
+                .delete(document.id())
                 .await?;
 
             // Remove locally
-            if sinks.write().remove(&row.config.sink_type()).is_some() {
-                active_sinks_count.fetch_sub(1, Ordering::Relaxed);
+            if integrations
+                .write()
+                .remove(&document.config.integration_type())
+                .is_some()
+            {
+                active_integrations_count.fetch_sub(1, Ordering::Relaxed);
             }
         }
 
-        // Startup `Pending` sinks
-        let mut model = LogSinksModel::new(&mut tx);
-        tracing::info!("Found {:} sink(s) in Pending state.", pending_sinks.len());
-        for row in pending_sinks {
-            tracing::info!("Starting log sink {}", row.config);
+        // Startup `Pending` integrations
+        let mut model = IntegrationsModel::new(&mut tx);
+        tracing::info!(
+            "Found {:} integration(s) in Pending state.",
+            pending_integrations.len()
+        );
+        for document in pending_integrations {
+            tracing::info!("Starting integration {}", document.config);
 
-            let sink_type = row.config.sink_type();
-            let sink_id = row.developer_id();
-            let mut sink_config = row.config.clone();
+            let integration_type = document.config.integration_type();
+            let integration_id = document.developer_id();
+            let mut integration_config = document.config.clone();
             // Ignore the `custom_audit` topic if the deployment isn't entitled.
-            if !custom_audit_allowed && let Some(Some(topics)) = sink_config.topics_mut() {
+            if !custom_audit_allowed && let Some(Some(topics)) = integration_config.topics_mut() {
                 topics.remove(&LogTopic::CustomAudit);
             }
-            let sink_status = row.status.clone();
+            let integration_status = document.status.clone();
             let timed_startup_result = runtime
                 .with_timeout(
-                    "sink startup timeout",
-                    consts::SINK_STARTUP_TIMEOUT,
-                    Self::config_to_log_sink_client(
+                    "integration startup timeout",
+                    consts::INTEGRATION_STARTUP_TIMEOUT,
+                    Self::config_to_integration_client(
                         runtime,
                         fetch_client.clone(),
                         sentry_transport.clone(),
-                        sink_config,
+                        integration_config,
                         metadata.clone(),
-                        sink_status,
+                        integration_status,
                         egress_counter.clone(),
                     ),
                 )
@@ -595,80 +617,95 @@ impl<RT: Runtime> LogManager<RT> {
                     // An unreachable or rejecting endpoint is the customer's
                     // configuration to fix, so it is counted rather than
                     // reported; anything else is ours and keeps full fidelity.
-                    // `SINK_STARTUP_TIMEOUT` fires as a bare `TimeoutError`, so
+                    // `INTEGRATION_STARTUP_TIMEOUT` fires as a bare `TimeoutError`, so
                     // a hung endpoint only lands here.
-                    let reason = if let Some(failure) = e.downcast_ref::<SinkEgressFailure>() {
-                        metrics::log_sink_verification_failure(
-                            sink_type.as_str(),
+                    let reason = if let Some(failure) = e.downcast_ref::<IntegrationEgressFailure>()
+                    {
+                        metrics::integration_verification_failure(
+                            integration_type.as_str(),
                             failure.outcome_label(),
                         );
                         format!("{e:#}")
                     } else if e.downcast_ref::<TimeoutError>().is_some() {
-                        metrics::log_sink_verification_failure(sink_type.as_str(), "transient");
+                        metrics::integration_verification_failure(
+                            integration_type.as_str(),
+                            "transient",
+                        );
                         "Timed out verifying the log stream endpoint".to_string()
                     } else {
                         report_error(&mut e).await;
                         e.user_facing_message()
                     };
-                    tracing::error!("Moving sink {sink_type:?} to Failed state. Reason: {reason}");
+                    tracing::error!(
+                        "Moving integration {integration_type:?} to Failed state. Reason: {reason}"
+                    );
 
                     model
-                        .patch_status(sink_id, SinkState::Failed { reason })
+                        .patch_status(integration_id, IntegrationState::Failed { reason })
                         .await?;
                 },
-                Ok(sink_client) => {
-                    model.patch_status(sink_id, SinkState::Active {}).await?;
+                Ok(integration_client) => {
+                    model
+                        .patch_status(integration_id, IntegrationState::Active {})
+                        .await?;
 
                     // Save locally
-                    sinks.write().insert(sink_type, sink_client);
+                    integrations
+                        .write()
+                        .insert(integration_type, integration_client);
                     // Ordering::Relaxed is okay here since logs don't need to be
-                    // picked up immediately by an active sink and they can start
+                    // picked up immediately by an active integration and they can start
                     // a little earlier as well. Reordering isn't a big deal.
-                    active_sinks_count.fetch_add(1, Ordering::Relaxed);
+                    active_integrations_count.fetch_add(1, Ordering::Relaxed);
                 },
             }
         }
 
-        // Set inactive rows to `Restarting` (skips verification)
-        tracing::info!("Found {:} inactive sink(s).", inactive_sinks.len());
-        for row in inactive_sinks {
+        // Set inactive documents to `Restarting` (skips verification)
+        tracing::info!(
+            "Found {:} inactive integration(s).",
+            inactive_integrations.len()
+        );
+        for document in inactive_integrations {
             tracing::info!(
-                "Found log sink with Active status that has not started. Updating to Restarting \
-                 status and restarting: {}",
-                row.config
+                "Found integration with Active status that has not started. Updating to \
+                 Restarting status and restarting: {}",
+                document.config
             );
             model
-                .patch_status(row.developer_id(), SinkState::Restarting)
+                .patch_status(document.developer_id(), IntegrationState::Restarting)
                 .await?;
         }
 
         // Commit
         database
-            .commit_with_write_source(tx, "log_sink_worker")
+            .commit_with_write_source(tx, "integration_worker")
             .await?;
 
         Ok(())
     }
 
-    /// Starts the LogSinkClient for this config
-    async fn config_to_log_sink_client(
+    /// Starts the IntegrationClient for this config
+    async fn config_to_integration_client(
         runtime: &RT,
         fetch_client: Arc<dyn FetchClient>,
         sentry_transport: Arc<dyn TransportFactory>,
-        config: SinkConfig,
+        config: IntegrationConfig,
         metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
-        status: SinkState,
+        status: IntegrationState,
         egress_counter: EgressCounter,
-    ) -> anyhow::Result<LogSinkClient> {
-        // Only verify credentials for sinks in Pending state (not Restarting)
-        let should_verify = matches!(status, SinkState::Pending);
-        let failure_reporter = SinkFailureReporter::new(config.sink_type());
+    ) -> anyhow::Result<IntegrationClient> {
+        // Only verify credentials for integrations in Pending state (not Restarting)
+        let should_verify = matches!(status, IntegrationState::Pending);
+        let failure_reporter = IntegrationFailureReporter::new(config.integration_type());
 
         match config {
-            SinkConfig::Local(path) => LocalSink::start(runtime.clone(), path.parse()?).await,
-            SinkConfig::Datadog(config) => {
+            IntegrationConfig::Local(path) => {
+                LocalIntegration::start(runtime.clone(), path.parse()?).await
+            },
+            IntegrationConfig::Datadog(config) => {
                 let topics = config.topics.clone();
-                DatadogSink::start(
+                DatadogIntegration::start(
                     runtime.clone(),
                     fetch_client,
                     config,
@@ -680,9 +717,9 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::Webhook(config) => {
+            IntegrationConfig::Webhook(config) => {
                 let topics = config.topics.clone();
-                WebhookSink::start(
+                WebhookIntegration::start(
                     runtime.clone(),
                     config,
                     topics,
@@ -694,9 +731,9 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::Axiom(config) => {
+            IntegrationConfig::Axiom(config) => {
                 let topics = config.topics.clone();
-                AxiomSink::start(
+                AxiomIntegration::start(
                     runtime.clone(),
                     config,
                     topics,
@@ -708,8 +745,8 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::Sentry(config) => {
-                SentrySink::start(
+            IntegrationConfig::Sentry(config) => {
+                SentryIntegration::start(
                     runtime.clone(),
                     config,
                     sentry_transport,
@@ -718,9 +755,9 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::PostHogLogs(config) => {
+            IntegrationConfig::PostHogLogs(config) => {
                 let topics = config.topics.clone();
-                PostHogLogsSink::start(
+                PostHogLogsIntegration::start(
                     runtime.clone(),
                     config,
                     topics,
@@ -732,8 +769,8 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::PostHogErrorTracking(config) => {
-                PostHogErrorTrackingSink::start(
+            IntegrationConfig::PostHogErrorTracking(config) => {
+                PostHogErrorTrackingIntegration::start(
                     runtime.clone(),
                     config,
                     fetch_client,
@@ -744,14 +781,14 @@ impl<RT: Runtime> LogManager<RT> {
                 )
                 .await
             },
-            SinkConfig::S3Export(_) => {
+            IntegrationConfig::S3Export(_) => {
                 // The application worker advances this export; the log manager
                 // owns the integration's lifecycle in `_log_sinks`.
                 let (events_sender, mut events_receiver) = mpsc::channel(1);
-                let handle = runtime.spawn("analytics_export_sink", async move {
+                let handle = runtime.spawn("analytics_export_integration", async move {
                     while events_receiver.recv().await.is_some() {}
                 });
-                Ok(LogSinkClient {
+                Ok(IntegrationClient {
                     _handle: Arc::new(Mutex::new(handle)),
                     events_sender,
                 })
@@ -796,7 +833,7 @@ impl<RT: Runtime> LogManager<RT> {
     }
 }
 
-pub struct LogSinkClient {
+pub struct IntegrationClient {
     _handle: Arc<Mutex<Box<dyn SpawnHandle>>>,
     events_sender: mpsc::Sender<Vec<Arc<LogEvent>>>,
 }

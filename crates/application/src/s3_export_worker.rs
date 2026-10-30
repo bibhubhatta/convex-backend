@@ -19,15 +19,15 @@ use exports::interface::ExportProvider;
 use fastrace::future::FutureExt as _;
 use keybroker::Identity;
 use model::{
-    log_sinks::{
+    integrations::{
         types::{
             s3_export::S3ExportCredentials,
-            LogSinksRow,
-            SinkConfig,
-            SinkState,
-            SinkType,
+            IntegrationConfig,
+            IntegrationDocument,
+            IntegrationState,
+            IntegrationType,
         },
-        LogSinksModel,
+        IntegrationsModel,
     },
     s3_export_state::{
         types::{
@@ -102,8 +102,8 @@ impl<RT: Runtime> S3ExportWorker<RT> {
 
     async fn run_once(&self) -> anyhow::Result<()> {
         let mut tx = self.database.begin(Identity::system()).await?;
-        let export = LogSinksModel::new(&mut tx)
-            .get_by_provider(SinkType::S3Export)
+        let export = IntegrationsModel::new(&mut tx)
+            .get_by_provider(IntegrationType::S3Export)
             .await?;
         let Some(export) = export else {
             let token = tx.into_token()?;
@@ -112,7 +112,7 @@ impl<RT: Runtime> S3ExportWorker<RT> {
                 .await?;
             return Ok(());
         };
-        let SinkConfig::S3Export(config) = &export.config else {
+        let IntegrationConfig::S3Export(config) = &export.config else {
             anyhow::bail!("S3 export document has a different configuration type");
         };
         if !config.credentials.is_ready() {
@@ -188,7 +188,7 @@ impl<RT: Runtime> S3ExportWorker<RT> {
                 Err(error) if error.is_bad_request() => {
                     self.set_status(
                         &export,
-                        SinkState::Failed {
+                        IntegrationState::Failed {
                             reason: error.user_facing_message(),
                         },
                     )
@@ -220,8 +220,8 @@ impl<RT: Runtime> S3ExportWorker<RT> {
         let mut tx = self.database.begin(Identity::system()).await?;
         // A page synced under a configuration that has since changed does not
         // describe the current export.
-        let current = LogSinksModel::new(&mut tx)
-            .get_by_provider(SinkType::S3Export)
+        let current = IntegrationsModel::new(&mut tx)
+            .get_by_provider(IntegrationType::S3Export)
             .await?;
         if !is_same_export(current.as_ref(), &export) {
             return Ok(());
@@ -244,11 +244,11 @@ impl<RT: Runtime> S3ExportWorker<RT> {
             drop(tx);
         }
         // After the checkpoint commit, which reads this document.
-        self.set_status(&export, SinkState::Active).await?;
+        self.set_status(&export, IntegrationState::Active).await?;
         if matches!(&page.status, SyncStatus::UpToDate { .. }) {
             let mut tx = self.database.begin(Identity::system()).await?;
-            let current = LogSinksModel::new(&mut tx)
-                .get_by_provider(SinkType::S3Export)
+            let current = IntegrationsModel::new(&mut tx)
+                .get_by_provider(IntegrationType::S3Export)
                 .await?;
             if !is_same_export(current.as_ref(), &export) {
                 return Ok(());
@@ -275,15 +275,15 @@ impl<RT: Runtime> S3ExportWorker<RT> {
     /// changed since `export` was read.
     async fn set_status(
         &self,
-        export: &ParsedDocument<LogSinksRow>,
-        status: SinkState,
+        export: &ParsedDocument<IntegrationDocument>,
+        status: IntegrationState,
     ) -> anyhow::Result<()> {
         if export.status == status {
             return Ok(());
         }
         let mut tx = self.database.begin(Identity::system()).await?;
-        let mut model = LogSinksModel::new(&mut tx);
-        let current = model.get_by_provider(SinkType::S3Export).await?;
+        let mut model = IntegrationsModel::new(&mut tx);
+        let current = model.get_by_provider(IntegrationType::S3Export).await?;
         if !is_same_export(current.as_ref(), export)
             || current.is_some_and(|current| current.status == status)
         {
@@ -299,8 +299,8 @@ impl<RT: Runtime> S3ExportWorker<RT> {
 
 /// Whether `current` is still the export a page was synced for.
 fn is_same_export(
-    current: Option<&ParsedDocument<LogSinksRow>>,
-    export: &ParsedDocument<LogSinksRow>,
+    current: Option<&ParsedDocument<IntegrationDocument>>,
+    export: &ParsedDocument<IntegrationDocument>,
 ) -> bool {
     current.is_some_and(|current| {
         current.developer_id() == export.developer_id() && current.config == export.config

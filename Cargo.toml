@@ -112,6 +112,7 @@ imbl = "7.0.0"
 imbl_slab = { path = "crates/imbl_slab" }
 indexing = { path = "crates/indexing" }
 indexmap = "2"
+integrations = { path = "crates/integrations" }
 interval_map = { path = "crates/interval_map" }
 isolate = { path = "crates/isolate" }
 itertools = "0.14"
@@ -123,7 +124,6 @@ keybroker = { path = "crates/keybroker" }
 libc = "0.2"
 libsodium-sys-stable = { version = "1.22.2", features = [ "minimal" ] }
 log_interleaver = { path = "crates/log_interleaver" }
-log_streaming = { path = "crates/log_streaming" }
 lru = "0.18.0"
 lz4_flex = "0.14"
 maplit = "1"

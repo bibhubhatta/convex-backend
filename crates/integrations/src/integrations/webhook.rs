@@ -34,7 +34,7 @@ use http::{
     header::CONTENT_TYPE,
     HeaderValue,
 };
-use model::log_sinks::types::webhook::{
+use model::integrations::types::webhook::{
     WebhookConfig,
     WebhookFormat,
 };
@@ -46,21 +46,21 @@ use tokio::sync::mpsc;
 
 use crate::{
     consts,
-    metrics::webhook_sink_network_egress_bytes,
-    sinks::{
+    integrations::{
         failure::{
-            classify_sink_response,
-            SinkEgressFailure,
-            SinkFailureReporter,
+            classify_integration_response,
+            IntegrationEgressFailure,
+            IntegrationFailureReporter,
         },
         utils::{
             self,
             build_event_batches,
             EgressCounter,
-            SinkFilter,
+            IntegrationFilter,
         },
     },
-    LogSinkClient,
+    metrics::webhook_integration_network_egress_bytes,
+    IntegrationClient,
     LoggingDeploymentMetadata,
 };
 
@@ -85,19 +85,19 @@ impl<'a> WebhookLogEvent<'a> {
     }
 }
 
-pub struct WebhookSink<RT: Runtime> {
+pub struct WebhookIntegration<RT: Runtime> {
     runtime: RT,
     config: WebhookConfig,
-    filter: SinkFilter,
+    filter: IntegrationFilter,
     fetch_client: Arc<dyn FetchClient>,
     events_receiver: mpsc::Receiver<Vec<Arc<LogEvent>>>,
     backoff: Backoff,
     deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
     egress_counter: EgressCounter,
-    failure_reporter: SinkFailureReporter,
+    failure_reporter: IntegrationFailureReporter,
 }
 
-impl<RT: Runtime> WebhookSink<RT> {
+impl<RT: Runtime> WebhookIntegration<RT> {
     pub async fn start(
         runtime: RT,
         config: WebhookConfig,
@@ -105,21 +105,21 @@ impl<RT: Runtime> WebhookSink<RT> {
         fetch_client: Arc<dyn FetchClient>,
         deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         egress_counter: EgressCounter,
-        failure_reporter: SinkFailureReporter,
+        failure_reporter: IntegrationFailureReporter,
         should_verify: bool,
-    ) -> anyhow::Result<LogSinkClient> {
-        tracing::info!("Starting WebhookSink");
-        let (tx, rx) = mpsc::channel(consts::WEBHOOK_SINK_EVENTS_BUFFER_SIZE);
+    ) -> anyhow::Result<IntegrationClient> {
+        tracing::info!("Starting WebhookIntegration");
+        let (tx, rx) = mpsc::channel(consts::WEBHOOK_INTEGRATION_EVENTS_BUFFER_SIZE);
 
-        let mut sink = Self {
+        let mut integration = Self {
             runtime: runtime.clone(),
             config,
-            filter: SinkFilter::for_version(LOG_EVENT_FORMAT_FOR_WEBHOOK, subscribed_topics),
+            filter: IntegrationFilter::for_version(LOG_EVENT_FORMAT_FOR_WEBHOOK, subscribed_topics),
             fetch_client,
             events_receiver: rx,
             backoff: Backoff::new(
-                consts::WEBHOOK_SINK_INITIAL_BACKOFF,
-                consts::WEBHOOK_SINK_MAX_BACKOFF,
+                consts::WEBHOOK_INTEGRATION_INITIAL_BACKOFF,
+                consts::WEBHOOK_INTEGRATION_MAX_BACKOFF,
             ),
             deployment_metadata,
             egress_counter,
@@ -127,13 +127,15 @@ impl<RT: Runtime> WebhookSink<RT> {
         };
 
         if should_verify {
-            sink.verify_initial_request().await?;
-            tracing::info!("WebhookSink verified!");
+            integration.verify_initial_request().await?;
+            tracing::info!("WebhookIntegration verified!");
         }
 
-        let handle = Arc::new(Mutex::new(runtime.spawn("webhook_sink", sink.go())));
+        let handle = Arc::new(Mutex::new(
+            runtime.spawn("webhook_integration", integration.go()),
+        ));
 
-        Ok(LogSinkClient {
+        Ok(IntegrationClient {
             _handle: handle,
             events_sender: tx,
         })
@@ -153,14 +155,14 @@ impl<RT: Runtime> WebhookSink<RT> {
             match self.events_receiver.recv().await {
                 None => {
                     // The sender was closed, event loop should shutdown
-                    tracing::warn!("Stopping WebhookSink. Sender was closed.");
+                    tracing::warn!("Stopping WebhookIntegration. Sender was closed.");
                     return;
                 },
                 Some(ev) => {
                     // Split events into batches
                     let batches = build_event_batches(
                         ev,
-                        consts::WEBHOOK_SINK_MAX_LOGS_PER_BATCH,
+                        consts::WEBHOOK_INTEGRATION_MAX_LOGS_PER_BATCH,
                         &self.filter,
                     );
 
@@ -213,16 +215,16 @@ impl<RT: Runtime> WebhookSink<RT> {
         // Make request in a loop that retries on transient errors
         let mut last_failure = None;
         let max_attempts = if is_verification {
-            consts::WEBHOOK_SINK_VERIFICATION_MAX_ATTEMPTS
+            consts::WEBHOOK_INTEGRATION_VERIFICATION_MAX_ATTEMPTS
         } else {
-            consts::WEBHOOK_SINK_MAX_REQUEST_ATTEMPTS
+            consts::WEBHOOK_INTEGRATION_MAX_REQUEST_ATTEMPTS
         };
         for _ in 0..max_attempts {
             let response = self
                 .runtime
                 .with_timeout(
-                    "webhook_sink_request",
-                    consts::WEBHOOK_SINK_REQUEST_TIMEOUT,
+                    "webhook_integration_request",
+                    consts::WEBHOOK_INTEGRATION_REQUEST_TIMEOUT,
                     self.fetch_client.fetch(
                         HttpRequest {
                             url: self.config.url.clone(),
@@ -240,21 +242,21 @@ impl<RT: Runtime> WebhookSink<RT> {
                 && let Ok(r) = &response
             {
                 let num_bytes_egress = r.request_size.load(Ordering::Relaxed);
-                utils::track_log_sink_bandwidth(
+                utils::track_integration_bandwidth(
                     num_bytes_egress,
                     &self.egress_counter,
-                    webhook_sink_network_egress_bytes,
+                    webhook_integration_network_egress_bytes,
                 );
             }
 
-            match classify_sink_response(response) {
+            match classify_integration_response(response) {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.is_rejected() => anyhow::bail!(failure),
                 Err(failure) => {
                     let delay = self.backoff.fail(&mut self.runtime.rng());
                     tracing::warn!(
-                        "Failed to send in Webhook sink, waiting {delay:?} before retrying: \
-                         {failure}"
+                        "Failed to send in Webhook integration, waiting {delay:?} before \
+                         retrying: {failure}"
                     );
                     last_failure = Some(failure);
                     self.runtime.wait(delay).await;
@@ -262,7 +264,7 @@ impl<RT: Runtime> WebhookSink<RT> {
             }
         }
 
-        anyhow::bail!(SinkEgressFailure::retries_exhausted(
+        anyhow::bail!(IntegrationEgressFailure::retries_exhausted(
             max_attempts,
             last_failure
         ))
@@ -273,7 +275,7 @@ impl<RT: Runtime> WebhookSink<RT> {
         events: Vec<Arc<LogEvent>>,
         track_egress: bool,
     ) -> anyhow::Result<()> {
-        crate::metrics::webhook_sink_logs_received(events.len());
+        crate::metrics::webhook_integration_logs_received(events.len());
 
         let mut values_to_send = vec![];
         let deployment_metadata = self.deployment_metadata.lock().clone();
@@ -290,7 +292,7 @@ impl<RT: Runtime> WebhookSink<RT> {
         let batch_size = values_to_send.len();
 
         self.send_batch(values_to_send, false, track_egress).await?;
-        crate::metrics::webhook_sink_logs_sent(batch_size);
+        crate::metrics::webhook_integration_logs_sent(batch_size);
 
         Ok(())
     }

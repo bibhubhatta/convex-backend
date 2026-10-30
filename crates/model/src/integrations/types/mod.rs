@@ -13,36 +13,34 @@ use value::codegen_convex_serialization;
 
 pub mod axiom;
 pub mod datadog;
-pub mod mock_sink;
+pub mod mock_integration;
 pub mod posthog_error_tracking;
 pub mod posthog_logs;
 pub mod s3_export;
 pub mod sentry;
 pub mod webhook;
 
-/// Constants/Limits
-/// At most one sink per `SinkType`, so this bounds the number of distinct
-/// integrations a deployment can configure at once.
-pub const LOG_SINKS_LIMIT: usize = 8;
+/// At most one integration per `IntegrationType`, so this bounds the number of
+/// distinct integrations a deployment can configure at once.
+pub const INTEGRATIONS_LIMIT: usize = 8;
 
-/// Data model for an entry in the LOG_SINKS_TABLE
 #[derive(Debug, Clone, PartialEq)]
-pub struct LogSinksRow {
-    pub status: SinkState,
-    pub config: SinkConfig,
+pub struct IntegrationDocument {
+    pub status: IntegrationState,
+    pub config: IntegrationConfig,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SerializedLogSinksRow {
-    pub status: SerializedSinkState,
-    pub config: SerializedSinkConfig,
+pub struct SerializedIntegrationDocument {
+    pub status: SerializedIntegrationState,
+    pub config: SerializedIntegrationConfig,
 }
 
-impl TryFrom<LogSinksRow> for SerializedLogSinksRow {
+impl TryFrom<IntegrationDocument> for SerializedIntegrationDocument {
     type Error = anyhow::Error;
 
-    fn try_from(value: LogSinksRow) -> Result<Self, Self::Error> {
+    fn try_from(value: IntegrationDocument) -> Result<Self, Self::Error> {
         Ok(Self {
             status: value.status.into(),
             config: value.config.try_into()?,
@@ -50,10 +48,10 @@ impl TryFrom<LogSinksRow> for SerializedLogSinksRow {
     }
 }
 
-impl TryFrom<SerializedLogSinksRow> for LogSinksRow {
+impl TryFrom<SerializedIntegrationDocument> for IntegrationDocument {
     type Error = anyhow::Error;
 
-    fn try_from(value: SerializedLogSinksRow) -> Result<Self, Self::Error> {
+    fn try_from(value: SerializedIntegrationDocument) -> Result<Self, Self::Error> {
         Ok(Self {
             status: value.status.into(),
             config: value.config.try_into()?,
@@ -61,7 +59,7 @@ impl TryFrom<SerializedLogSinksRow> for LogSinksRow {
     }
 }
 
-codegen_convex_serialization!(LogSinksRow, SerializedLogSinksRow);
+codegen_convex_serialization!(IntegrationDocument, SerializedIntegrationDocument);
 
 /// Serialize a set of subscribed topics for storage. `None` (subscribe to all
 /// topics, including ones added in the future) is preserved as `None`.
@@ -83,8 +81,8 @@ pub(crate) fn deserialize_topics(
         .transpose()
 }
 
-/// Status of a configured LogSink
-/// LogSink SinkState state machine:
+/// Integration lifecycle, including restart verification and asynchronous
+/// removal:
 /// ```text
 /// +---------+
 /// | Pending |
@@ -106,7 +104,7 @@ pub(crate) fn deserialize_topics(
 /// +------------+
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub enum SinkState {
+pub enum IntegrationState {
     Pending,
     Restarting,
     Failed { reason: String },
@@ -117,7 +115,7 @@ pub enum SinkState {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-pub enum SerializedSinkState {
+pub enum SerializedIntegrationState {
     Pending,
     Restarting,
     #[serde(rename_all = "camelCase")]
@@ -129,48 +127,53 @@ pub enum SerializedSinkState {
     Tombstoned,
 }
 
-impl From<SinkState> for SerializedSinkState {
-    fn from(value: SinkState) -> Self {
+impl From<IntegrationState> for SerializedIntegrationState {
+    fn from(value: IntegrationState) -> Self {
         match value {
-            SinkState::Pending => SerializedSinkState::Pending,
-            SinkState::Restarting => SerializedSinkState::Restarting,
-            SinkState::Failed { reason } => SerializedSinkState::Failed { reason },
-            SinkState::Active => SerializedSinkState::Active,
-            SinkState::Tombstoned => SerializedSinkState::Tombstoned,
+            IntegrationState::Pending => SerializedIntegrationState::Pending,
+            IntegrationState::Restarting => SerializedIntegrationState::Restarting,
+            IntegrationState::Failed { reason } => SerializedIntegrationState::Failed { reason },
+            IntegrationState::Active => SerializedIntegrationState::Active,
+            IntegrationState::Tombstoned => SerializedIntegrationState::Tombstoned,
         }
     }
 }
 
-impl From<SerializedSinkState> for SinkState {
-    fn from(value: SerializedSinkState) -> Self {
+impl From<SerializedIntegrationState> for IntegrationState {
+    fn from(value: SerializedIntegrationState) -> Self {
         match value {
-            SerializedSinkState::Pending => SinkState::Pending,
-            SerializedSinkState::Restarting => SinkState::Restarting,
-            SerializedSinkState::Failed { reason } => SinkState::Failed { reason },
-            SerializedSinkState::Active => SinkState::Active,
-            SerializedSinkState::Tombstoned => SinkState::Tombstoned,
+            SerializedIntegrationState::Pending => IntegrationState::Pending,
+            SerializedIntegrationState::Restarting => IntegrationState::Restarting,
+            SerializedIntegrationState::Failed { reason } => IntegrationState::Failed { reason },
+            SerializedIntegrationState::Active => IntegrationState::Active,
+            SerializedIntegrationState::Tombstoned => IntegrationState::Tombstoned,
         }
     }
 }
 
-codegen_convex_serialization!(SinkState, SerializedSinkState);
+codegen_convex_serialization!(IntegrationState, SerializedIntegrationState);
 
 /// The list of logging providers we support
-/// This is different from LogSinkConfig in that this is just a C-style
+/// This is different from IntegrationConfig in that this is just a C-style
 /// enum as opposed to an ADT. This is meant to be used for the unsubscription
-/// API and classifying sinks without having to specify a config.
+/// API and classifying integrations without having to specify a config.
 ///
 /// DatadogV2 + AxiomV2 are the unlaunched versions of
 /// https://www.notion.so/convex-dev/Log-streams-round-2-da990dc843e24e13b4a2051f51d0bb9c
 /// They will eventually replace `Datadog` and `Axiom`
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Serialize, Deserialize, strum::IntoStaticStr,
+)]
 #[serde(rename_all = "camelCase")]
-pub enum SinkType {
+#[strum(serialize_all = "camelCase")]
+pub enum IntegrationType {
     Local,
     Datadog,
+    #[strum(serialize = "datadog")]
     DatadogV2,
     Webhook,
     Axiom,
+    #[strum(serialize = "axiom")]
     AxiomV2,
     Sentry,
     PostHogLogs,
@@ -178,27 +181,16 @@ pub enum SinkType {
     S3Export,
 }
 
-impl SinkType {
+impl IntegrationType {
     pub fn as_str(&self) -> &'static str {
-        match self {
-            SinkType::Local => "local",
-            SinkType::Datadog => "datadog",
-            SinkType::DatadogV2 => "datadog",
-            SinkType::Webhook => "webhook",
-            SinkType::Axiom => "axiom",
-            SinkType::AxiomV2 => "axiom",
-            SinkType::Sentry => "sentry",
-            SinkType::PostHogLogs => "postHogLogs",
-            SinkType::PostHogErrorTracking => "postHogErrorTracking",
-            SinkType::S3Export => "s3Export",
-        }
+        self.into()
     }
 }
 
-/// The configurations associated with each LogSinkType above.
+/// The configurations associated with each IntegrationType above.
 /// Meant to be used for the subscription API.
 #[derive(Debug, Clone, PartialEq)]
-pub enum SinkConfig {
+pub enum IntegrationConfig {
     Local(String),
     Datadog(datadog::DatadogConfig),
     Webhook(webhook::WebhookConfig),
@@ -212,7 +204,7 @@ pub enum SinkConfig {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-pub enum SerializedSinkConfig {
+pub enum SerializedIntegrationConfig {
     Local {
         path: String,
     },
@@ -225,65 +217,71 @@ pub enum SerializedSinkConfig {
     S3Export(s3_export::SerializedS3ExportConfig),
 }
 
-impl TryFrom<SerializedSinkConfig> for SinkConfig {
+impl TryFrom<SerializedIntegrationConfig> for IntegrationConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: SerializedSinkConfig) -> Result<Self, Self::Error> {
+    fn try_from(value: SerializedIntegrationConfig) -> Result<Self, Self::Error> {
         match value {
-            SerializedSinkConfig::Local { path } => Ok(SinkConfig::Local(path)),
-            SerializedSinkConfig::Datadog(config) => Ok(SinkConfig::Datadog(
+            SerializedIntegrationConfig::Local { path } => Ok(IntegrationConfig::Local(path)),
+            SerializedIntegrationConfig::Datadog(config) => Ok(IntegrationConfig::Datadog(
                 datadog::DatadogConfig::try_from(config)?,
             )),
-            SerializedSinkConfig::Webhook(config) => Ok(SinkConfig::Webhook(
+            SerializedIntegrationConfig::Webhook(config) => Ok(IntegrationConfig::Webhook(
                 webhook::WebhookConfig::try_from(config)?,
             )),
-            SerializedSinkConfig::Axiom(config) => {
-                Ok(SinkConfig::Axiom(axiom::AxiomConfig::try_from(config)?))
+            SerializedIntegrationConfig::Axiom(config) => Ok(IntegrationConfig::Axiom(
+                axiom::AxiomConfig::try_from(config)?,
+            )),
+            SerializedIntegrationConfig::Sentry(config) => Ok(IntegrationConfig::Sentry(
+                sentry::SentryConfig::try_from(config)?,
+            )),
+            SerializedIntegrationConfig::PostHogLogs(config) => {
+                Ok(IntegrationConfig::PostHogLogs(config.try_into()?))
             },
-            SerializedSinkConfig::Sentry(config) => {
-                Ok(SinkConfig::Sentry(sentry::SentryConfig::try_from(config)?))
+            SerializedIntegrationConfig::PostHogErrorTracking(config) => {
+                Ok(IntegrationConfig::PostHogErrorTracking(config.into()))
             },
-            SerializedSinkConfig::PostHogLogs(config) => {
-                Ok(SinkConfig::PostHogLogs(config.try_into()?))
+            SerializedIntegrationConfig::S3Export(config) => {
+                Ok(IntegrationConfig::S3Export(config.try_into()?))
             },
-            SerializedSinkConfig::PostHogErrorTracking(config) => {
-                Ok(SinkConfig::PostHogErrorTracking(config.into()))
-            },
-            SerializedSinkConfig::S3Export(config) => Ok(SinkConfig::S3Export(config.try_into()?)),
         }
     }
 }
 
-impl TryFrom<SinkConfig> for SerializedSinkConfig {
+impl TryFrom<IntegrationConfig> for SerializedIntegrationConfig {
     type Error = anyhow::Error;
 
-    fn try_from(value: SinkConfig) -> Result<Self, Self::Error> {
+    fn try_from(value: IntegrationConfig) -> Result<Self, Self::Error> {
         match value {
-            SinkConfig::Local(path) => Ok(SerializedSinkConfig::Local { path }),
-            SinkConfig::Datadog(config) => Ok(SerializedSinkConfig::Datadog(
+            IntegrationConfig::Local(path) => Ok(SerializedIntegrationConfig::Local { path }),
+            IntegrationConfig::Datadog(config) => Ok(SerializedIntegrationConfig::Datadog(
                 datadog::SerializedDatadogConfig::from(config),
             )),
-            SinkConfig::Webhook(config) => Ok(SerializedSinkConfig::Webhook(
+            IntegrationConfig::Webhook(config) => Ok(SerializedIntegrationConfig::Webhook(
                 webhook::SerializedWebhookConfig::from(config),
             )),
-            SinkConfig::Axiom(config) => Ok(SerializedSinkConfig::Axiom(
+            IntegrationConfig::Axiom(config) => Ok(SerializedIntegrationConfig::Axiom(
                 axiom::SerializedAxiomConfig::from(config),
             )),
-            SinkConfig::Sentry(config) => Ok(SerializedSinkConfig::Sentry(
+            IntegrationConfig::Sentry(config) => Ok(SerializedIntegrationConfig::Sentry(
                 sentry::SerializedSentryConfig::try_from(config)?,
             )),
-            SinkConfig::PostHogLogs(config) => Ok(SerializedSinkConfig::PostHogLogs(config.into())),
-            SinkConfig::PostHogErrorTracking(config) => {
-                Ok(SerializedSinkConfig::PostHogErrorTracking(config.into()))
+            IntegrationConfig::PostHogLogs(config) => {
+                Ok(SerializedIntegrationConfig::PostHogLogs(config.into()))
             },
-            SinkConfig::S3Export(config) => Ok(SerializedSinkConfig::S3Export(config.into())),
+            IntegrationConfig::PostHogErrorTracking(config) => Ok(
+                SerializedIntegrationConfig::PostHogErrorTracking(config.into()),
+            ),
+            IntegrationConfig::S3Export(config) => {
+                Ok(SerializedIntegrationConfig::S3Export(config.into()))
+            },
         }
     }
 }
 
-codegen_convex_serialization!(SinkConfig, SerializedSinkConfig);
+codegen_convex_serialization!(IntegrationConfig, SerializedIntegrationConfig);
 
-impl fmt::Display for SinkConfig {
+impl fmt::Display for IntegrationConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Local(config) => write!(f, "Local({config})"),
@@ -298,23 +296,23 @@ impl fmt::Display for SinkConfig {
     }
 }
 
-impl SinkConfig {
-    pub fn sink_type(&self) -> SinkType {
+impl IntegrationConfig {
+    pub fn integration_type(&self) -> IntegrationType {
         match self {
-            Self::Local(_) => SinkType::Local,
-            Self::Datadog(_) => SinkType::Datadog,
-            Self::Webhook(_) => SinkType::Webhook,
-            Self::Axiom(_) => SinkType::Axiom,
-            Self::Sentry(_) => SinkType::Sentry,
-            Self::PostHogLogs(_) => SinkType::PostHogLogs,
-            Self::PostHogErrorTracking(_) => SinkType::PostHogErrorTracking,
-            Self::S3Export(_) => SinkType::S3Export,
+            Self::Local(_) => IntegrationType::Local,
+            Self::Datadog(_) => IntegrationType::Datadog,
+            Self::Webhook(_) => IntegrationType::Webhook,
+            Self::Axiom(_) => IntegrationType::Axiom,
+            Self::Sentry(_) => IntegrationType::Sentry,
+            Self::PostHogLogs(_) => IntegrationType::PostHogLogs,
+            Self::PostHogErrorTracking(_) => IntegrationType::PostHogErrorTracking,
+            Self::S3Export(_) => IntegrationType::S3Export,
         }
     }
 
-    /// The set of topics this sink is subscribed to. `Some(None)` for
-    /// subscriptions to all topics, and `None` for sink types that do not
-    /// support topic subscriptions.
+    /// The set of topics this integration is subscribed to. `Some(None)` for
+    /// subscriptions to all topics, and `None` for integration types that do
+    /// not support topic subscriptions.
     pub fn topics_mut(&mut self) -> Option<&mut Option<BTreeSet<LogTopic>>> {
         match self {
             Self::Datadog(config) => Some(&mut config.topics),

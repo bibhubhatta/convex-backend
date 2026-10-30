@@ -22,7 +22,7 @@ use std::{
 };
 
 use ::exports::interface::ExportProvider;
-use ::log_streaming::{
+use ::integrations::{
     LogManager,
     LogManagerClient,
 };
@@ -444,7 +444,7 @@ pub mod deployment_state;
 mod execute_query_timestamp;
 mod exports;
 pub mod function_log;
-pub mod log_streaming;
+pub mod integrations;
 pub mod log_visibility;
 mod metrics;
 pub mod redaction;

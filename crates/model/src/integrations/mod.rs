@@ -26,31 +26,31 @@ use crate::{
 
 pub mod types;
 use types::{
-    LogSinksRow,
-    SinkConfig,
-    SinkState,
-    SinkType,
-    LOG_SINKS_LIMIT,
+    IntegrationConfig,
+    IntegrationDocument,
+    IntegrationState,
+    IntegrationType,
+    INTEGRATIONS_LIMIT,
 };
 
-pub const LOG_SINKS_TABLE: TableName = TableName::const_new("_log_sinks");
+pub const INTEGRATIONS_TABLE: TableName = TableName::const_new("_log_sinks");
 
-pub struct LogSinksTable;
-impl SystemTable for LogSinksTable {
-    type Metadata = LogSinksRow;
+pub struct IntegrationsTable;
+impl SystemTable for IntegrationsTable {
+    type Metadata = IntegrationDocument;
 
-    const TABLE_NAME: TableName = LOG_SINKS_TABLE;
+    const TABLE_NAME: TableName = INTEGRATIONS_TABLE;
 
     fn indexes() -> Vec<SystemIndex<Self>> {
         vec![]
     }
 }
 
-pub struct LogSinksModel<'a, RT: Runtime> {
+pub struct IntegrationsModel<'a, RT: Runtime> {
     tx: &'a mut Transaction<RT>,
 }
 
-impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
+impl<'a, RT: Runtime> IntegrationsModel<'a, RT> {
     pub fn new(tx: &'a mut Transaction<RT>) -> Self {
         Self { tx }
     }
@@ -58,10 +58,10 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     async fn must_get_including_tombstoned(
         &mut self,
         id: DeveloperDocumentId,
-    ) -> anyhow::Result<ParsedDocument<LogSinksRow>> {
+    ) -> anyhow::Result<ParsedDocument<IntegrationDocument>> {
         Ok(Arc::unwrap_or_clone(
             self.tx
-                .get_system::<LogSinksTable>(TableNamespace::Global, id)
+                .get_system::<IntegrationsTable>(TableNamespace::Global, id)
                 .await?
                 .with_context(|| {
                     ErrorMetadata::not_found(
@@ -75,10 +75,10 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     pub async fn must_get(
         &mut self,
         id: DeveloperDocumentId,
-    ) -> anyhow::Result<ParsedDocument<LogSinksRow>> {
+    ) -> anyhow::Result<ParsedDocument<IntegrationDocument>> {
         let doc = self.must_get_including_tombstoned(id).await?;
         anyhow::ensure!(
-            doc.status != SinkState::Tombstoned,
+            doc.status != IntegrationState::Tombstoned,
             ErrorMetadata::not_found(
                 "LogStreamDoesntExist",
                 format!("No log stream with the given id {id} exists for this deployment."),
@@ -89,17 +89,17 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
 
     pub async fn get_by_provider(
         &mut self,
-        provider: SinkType,
-    ) -> anyhow::Result<Option<ParsedDocument<LogSinksRow>>> {
+        provider: IntegrationType,
+    ) -> anyhow::Result<Option<ParsedDocument<IntegrationDocument>>> {
         let mut result: Vec<_> = self
             .get_by_provider_including_tombstoned(provider.clone())
             .await?
             .into_iter()
-            .filter(|doc| doc.status != SinkState::Tombstoned)
+            .filter(|doc| doc.status != IntegrationState::Tombstoned)
             .collect();
         anyhow::ensure!(
             result.len() <= 1,
-            "Multiple sinks found of the same type: {:?}",
+            "Multiple integrations found of the same type: {:?}",
             provider
         );
         Ok(result.pop())
@@ -107,40 +107,40 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
 
     async fn get_by_provider_including_tombstoned(
         &mut self,
-        provider: SinkType,
-    ) -> anyhow::Result<Vec<ParsedDocument<LogSinksRow>>> {
+        provider: IntegrationType,
+    ) -> anyhow::Result<Vec<ParsedDocument<IntegrationDocument>>> {
         let result: Vec<_> = self
             .get_all()
             .await?
             .into_iter()
-            .filter(|doc| doc.config.sink_type() == provider)
+            .filter(|doc| doc.config.integration_type() == provider)
             .collect();
         Ok(result)
     }
 
-    pub async fn get_all(&mut self) -> anyhow::Result<Vec<ParsedDocument<LogSinksRow>>> {
+    pub async fn get_all(&mut self) -> anyhow::Result<Vec<ParsedDocument<IntegrationDocument>>> {
         let result = self
             .tx
             .query_system(
                 TableNamespace::Global,
-                &SystemIndex::<LogSinksTable>::by_id(),
+                &SystemIndex::<IntegrationsTable>::by_id(),
             )?
             .all()
             .await?
             .into_iter()
-            .map(|arc_row| (*arc_row).clone())
+            .map(|arc_document| (*arc_document).clone())
             .collect();
         Ok(result)
     }
 
     pub async fn get_all_non_tombstoned(
         &mut self,
-    ) -> anyhow::Result<Vec<ParsedDocument<LogSinksRow>>> {
+    ) -> anyhow::Result<Vec<ParsedDocument<IntegrationDocument>>> {
         let result = self
             .get_all()
             .await?
             .into_iter()
-            .filter(|row| row.status != SinkState::Tombstoned)
+            .filter(|document| document.status != IntegrationState::Tombstoned)
             .collect();
         Ok(result)
     }
@@ -148,7 +148,7 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     pub async fn patch_status(
         &mut self,
         id: DeveloperDocumentId,
-        status: SinkState,
+        status: IntegrationState,
     ) -> anyhow::Result<()> {
         let doc = self.must_get_including_tombstoned(id).await?;
         SystemMetadataModel::new_global(self.tx)
@@ -163,7 +163,7 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     pub async fn patch_config(
         &mut self,
         id: DeveloperDocumentId,
-        config: SinkConfig,
+        config: IntegrationConfig,
     ) -> anyhow::Result<()> {
         let doc = self.must_get(id).await?;
         SystemMetadataModel::new_global(self.tx)
@@ -176,51 +176,50 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     }
 
     pub async fn mark_for_removal(&mut self, id: DeveloperDocumentId) -> anyhow::Result<()> {
-        self.patch_status(id, SinkState::Tombstoned).await
+        self.patch_status(id, IntegrationState::Tombstoned).await
     }
 
     pub async fn add_or_update(
         &mut self,
-        config: SinkConfig,
+        config: IntegrationConfig,
     ) -> anyhow::Result<DeveloperDocumentId> {
-        let sink_type = config.sink_type();
-        let row = LogSinksRow {
-            status: SinkState::Pending,
+        let integration_type = config.integration_type();
+        let document = IntegrationDocument {
+            status: IntegrationState::Pending,
             config,
         };
 
-        let existing = self.get_by_provider(sink_type.clone()).await?;
+        let existing = self.get_by_provider(integration_type.clone()).await?;
         // Check within the insert transaction so concurrent creates cannot
         // replace an export and restart it.
         anyhow::ensure!(
-            existing.is_none() || sink_type != SinkType::S3Export,
+            existing.is_none() || integration_type != IntegrationType::S3Export,
             ErrorMetadata::conflict(
                 "LogStreamAlreadyExists",
                 "An S3 export already exists. Delete it before creating a new one.",
             )
         );
 
-        // Filter to non-tombstoned log sinks
-        let sinks = self
+        let integrations = self
             .get_all()
             .await?
             .into_iter()
-            .filter(|row| row.status != SinkState::Tombstoned)
+            .filter(|document| document.status != IntegrationState::Tombstoned)
             .collect::<Vec<_>>();
-        if sinks.len() >= LOG_SINKS_LIMIT {
+        if integrations.len() >= INTEGRATIONS_LIMIT {
             return Err(ErrorMetadata::bad_request(
                 "LogSinkQuotaExceeded",
-                "Cannot add more LogSinks, the quota for this project has been reached.",
+                "Cannot add more integrations, the quota for this project has been reached.",
             )
             .into());
         }
 
-        if let Some(row) = existing {
-            self.mark_for_removal(row.developer_id()).await?;
+        if let Some(document) = existing {
+            self.mark_for_removal(document.developer_id()).await?;
         }
 
         let id = SystemMetadataModel::new_global(self.tx)
-            .insert(&LOG_SINKS_TABLE, row.try_into()?)
+            .insert(&INTEGRATIONS_TABLE, document.try_into()?)
             .await?;
         Ok(id.developer_id)
     }
@@ -228,8 +227,8 @@ impl<'a, RT: Runtime> LogSinksModel<'a, RT> {
     pub async fn clear(&mut self) -> anyhow::Result<()> {
         let providers = self.get_all().await?;
 
-        for sink in providers {
-            self.mark_for_removal(sink.developer_id()).await?;
+        for integration in providers {
+            self.mark_for_removal(integration.developer_id()).await?;
         }
         Ok(())
     }

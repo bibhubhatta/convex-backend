@@ -393,7 +393,7 @@ pub enum StructuredLogEvent {
         outcome: AiGatewayOutcome,
         environment: AiGatewayEnvironment,
     },
-    /// Topic for log stream egress. Emitted when a log sink sends a batch
+    /// Topic for log stream egress. Emitted when a integration sends a batch
     /// of events to an external service, reporting the egress bytes used.
     LogStreamEgress {
         egress_bytes: u64,

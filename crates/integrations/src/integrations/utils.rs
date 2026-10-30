@@ -16,28 +16,29 @@ use common::log_streaming::{
     StructuredLogEvent,
 };
 
-/// Shared counter for total log stream egress bytes across all sinks.
-/// Sinks atomically increment this; a periodic task drains it and emits
+/// Shared counter for total log stream egress bytes across all integrations.
+/// Integrations atomically increment this; a periodic task drains it and emits
 /// a `LogStreamEgress` event.
 pub type EgressCounter = Arc<AtomicU64>;
 
-/// Decides which log events a sink receives.
+/// Decides which log events an integration receives.
 #[derive(Debug, Clone)]
-pub enum SinkFilter {
-    /// Exception sinks (Sentry, PostHog Error Tracking): receive only
+pub enum IntegrationFilter {
+    /// Exception integrations (Sentry, PostHog Error Tracking): receive only
     /// `exception` events and nothing else.
     OnlyExceptions,
-    /// `subscribed_topics == None` means the sink is subscribed to all
+    /// `subscribed_topics == None` means the integration is subscribed to all
     /// non-exception topics. When `Some`, only the listed topics are delivered.
     General {
         subscribed_topics: Option<BTreeSet<LogTopic>>,
     },
 }
 
-impl SinkFilter {
-    /// Build a `General` filter for a sink, applying topic subscriptions only
-    /// for V2 log streams. V1 (legacy) streams ignore `subscribed_topics` and
-    /// fall back to receiving all non-exception topics.
+impl IntegrationFilter {
+    /// Build a `General` filter for an integration, applying topic
+    /// subscriptions only for V2 log streams. V1 (legacy) streams ignore
+    /// `subscribed_topics` and fall back to receiving all non-exception
+    /// topics.
     pub fn for_version(
         version: LogEventFormatVersion,
         subscribed_topics: Option<BTreeSet<LogTopic>>,
@@ -46,19 +47,19 @@ impl SinkFilter {
             LogEventFormatVersion::V2 => subscribed_topics,
             LogEventFormatVersion::V1 => None,
         };
-        SinkFilter::General { subscribed_topics }
+        IntegrationFilter::General { subscribed_topics }
     }
 
     pub fn allows(&self, event: &LogEvent) -> bool {
         let topic = event.event.topic();
         match self {
-            SinkFilter::OnlyExceptions => topic == LogTopic::Exception,
-            SinkFilter::General { subscribed_topics } => {
+            IntegrationFilter::OnlyExceptions => topic == LogTopic::Exception,
+            IntegrationFilter::General { subscribed_topics } => {
                 // `verification` is the connection test and always passes;
                 if topic == LogTopic::Verification {
                     return true;
                 }
-                // `exception` is only ever routed to exception sinks.
+                // `exception` is only ever routed to exception integrations.
                 if topic == LogTopic::Exception {
                     return false;
                 }
@@ -78,7 +79,7 @@ impl SinkFilter {
 pub fn build_event_batches(
     events: Vec<Arc<LogEvent>>,
     batch_size: usize,
-    filter: &SinkFilter,
+    filter: &IntegrationFilter,
 ) -> Vec<Vec<Arc<LogEvent>>> {
     events
         .into_iter()
@@ -132,13 +133,13 @@ pub fn batch_has_non_egress_events(events: &[Arc<LogEvent>]) -> bool {
         .any(|ev| !matches!(ev.event, StructuredLogEvent::LogStreamEgress { .. }))
 }
 
-/// Accumulates log sink network egress bytes. Called by sinks after each
-/// successful HTTP send. The accumulated bytes are periodically drained by
+/// Accumulates integration network egress bytes. Called by integrations after
+/// each successful HTTP send. The accumulated bytes are periodically drained by
 /// `LogManager::egress_emission_worker` which emits both a `LogStreamEgress`
 /// event and a billing `track_call`.
 ///
 /// Note: This should only be called for non-verification requests.
-pub fn track_log_sink_bandwidth(
+pub fn track_integration_bandwidth(
     num_bytes_egress: u64,
     egress_counter: &EgressCounter,
     metrics_fn: impl FnOnce(u64),

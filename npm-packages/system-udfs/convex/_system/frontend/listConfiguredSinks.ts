@@ -3,21 +3,21 @@ import { queryPrivateSystem } from "../secretSystemTables";
 export default queryPrivateSystem("ViewIntegrations")({
   args: {},
   handler: async ({ db }): Promise<Integration[]> => {
-    const sinks = await db.query("_log_sinks").collect();
+    const integrations = await db.query("_log_sinks").collect();
     return Promise.all(
-      sinks.map(async (sink) => {
-        if (sink.config.type !== "s3Export") {
-          return sink;
+      integrations.map(async (integration) => {
+        if (integration.config.type !== "s3Export") {
+          return integration;
         }
         // The AWS secret access key is write-only: `ViewIntegrations` is a read
         // permission, so the stored secret must not leave the deployment.
-        const { secretAccessKey: _secret, ...config } = sink.config;
+        const { secretAccessKey: _secret, ...config } = integration.config;
         const state = await db
           .query("_s3_export_state")
-          .withIndex("by_config_id", (q) => q.eq("configId", sink._id))
+          .withIndex("by_config_id", (q) => q.eq("configId", integration._id))
           .unique();
         return {
-          ...sink,
+          ...integration,
           config,
           ...(state ? { exportProgress: state.checkpoint.progress } : {}),
         };

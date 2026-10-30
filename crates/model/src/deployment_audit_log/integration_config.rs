@@ -7,7 +7,7 @@ use serde::{
 };
 use value::FieldName;
 
-use crate::log_sinks::types::{
+use crate::integrations::types::{
     axiom::AxiomAttribute,
     posthog_logs::DEFAULT_POSTHOG_HOST,
     s3_export::{
@@ -16,7 +16,7 @@ use crate::log_sinks::types::{
     },
     serialize_topics,
     webhook::WebhookFormat,
-    SinkConfig,
+    IntegrationConfig,
 };
 
 /// Persisted audit snapshots have an explicit allowlist of configuration
@@ -127,17 +127,17 @@ fn url_origin(raw: &str) -> Option<String> {
     (origin != "null").then_some(origin)
 }
 
-pub fn audit_config(config: &SinkConfig) -> Option<IntegrationAuditConfig> {
+pub fn audit_config(config: &IntegrationConfig) -> Option<IntegrationAuditConfig> {
     Some(match config {
-        SinkConfig::Local(path) => IntegrationAuditConfig::Local { path: path.clone() },
-        SinkConfig::Datadog(config) => IntegrationAuditConfig::Datadog {
+        IntegrationConfig::Local(path) => IntegrationAuditConfig::Local { path: path.clone() },
+        IntegrationConfig::Datadog(config) => IntegrationAuditConfig::Datadog {
             site: config.site_location.to_string(),
             service: config.service.clone(),
             tags: config.dd_tags.clone(),
             format_version: config.version.to_string(),
             topics: serialize_topics(config.topics.clone()),
         },
-        SinkConfig::Axiom(config) => IntegrationAuditConfig::Axiom {
+        IntegrationConfig::Axiom(config) => IntegrationAuditConfig::Axiom {
             dataset: config.dataset_name.clone(),
             ingest_origin: url_origin(
                 config
@@ -149,44 +149,46 @@ pub fn audit_config(config: &SinkConfig) -> Option<IntegrationAuditConfig> {
             format_version: config.version.to_string(),
             topics: serialize_topics(config.topics.clone()),
         },
-        SinkConfig::Webhook(config) => IntegrationAuditConfig::Webhook {
+        IntegrationConfig::Webhook(config) => IntegrationAuditConfig::Webhook {
             url_origin: url_origin(config.url.as_str()),
             format: config.format.clone(),
             topics: serialize_topics(config.topics.clone()),
         },
-        SinkConfig::Sentry(config) => IntegrationAuditConfig::Sentry {
+        IntegrationConfig::Sentry(config) => IntegrationAuditConfig::Sentry {
             dsn_origin: url_origin(&config.dsn.0.to_string()),
             project_id: config.dsn.0.project_id().to_string(),
             tags: config.tags.clone(),
             format_version: config.version.to_string(),
         },
-        SinkConfig::PostHogLogs(config) => IntegrationAuditConfig::PostHogLogs {
+        IntegrationConfig::PostHogLogs(config) => IntegrationAuditConfig::PostHogLogs {
             host_origin: url_origin(config.host.as_deref().unwrap_or(DEFAULT_POSTHOG_HOST)),
             service_name: config.service_name.clone(),
             topics: serialize_topics(config.topics.clone()),
         },
-        SinkConfig::PostHogErrorTracking(config) => IntegrationAuditConfig::PostHogErrorTracking {
-            host_origin: url_origin(config.host.as_deref().unwrap_or(DEFAULT_POSTHOG_HOST)),
+        IntegrationConfig::PostHogErrorTracking(config) => {
+            IntegrationAuditConfig::PostHogErrorTracking {
+                host_origin: url_origin(config.host.as_deref().unwrap_or(DEFAULT_POSTHOG_HOST)),
+            }
         },
-        SinkConfig::S3Export(config) => IntegrationAuditConfig::S3Export(config.into()),
+        IntegrationConfig::S3Export(config) => IntegrationAuditConfig::S3Export(config.into()),
     })
 }
 
 pub fn audit_credential_changes(
-    previous: &SinkConfig,
-    current: &SinkConfig,
+    previous: &IntegrationConfig,
+    current: &IntegrationConfig,
 ) -> Option<IntegrationAuditCredentialChanges> {
     Some(match current {
-        SinkConfig::Datadog(current) => {
-            let SinkConfig::Datadog(previous) = previous else {
+        IntegrationConfig::Datadog(current) => {
+            let IntegrationConfig::Datadog(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::Datadog {
                 api_key_changed: previous.dd_api_key != current.dd_api_key,
             }
         },
-        SinkConfig::Axiom(current) => {
-            let SinkConfig::Axiom(previous) = previous else {
+        IntegrationConfig::Axiom(current) => {
+            let IntegrationConfig::Axiom(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::Axiom {
@@ -194,8 +196,8 @@ pub fn audit_credential_changes(
                 ingest_url_changed: previous.ingest_url != current.ingest_url,
             }
         },
-        SinkConfig::Webhook(current) => {
-            let SinkConfig::Webhook(previous) = previous else {
+        IntegrationConfig::Webhook(current) => {
+            let IntegrationConfig::Webhook(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::Webhook {
@@ -203,16 +205,16 @@ pub fn audit_credential_changes(
                 url_changed: previous.url != current.url,
             }
         },
-        SinkConfig::Sentry(current) => {
-            let SinkConfig::Sentry(previous) = previous else {
+        IntegrationConfig::Sentry(current) => {
+            let IntegrationConfig::Sentry(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::Sentry {
                 dsn_changed: previous.dsn != current.dsn,
             }
         },
-        SinkConfig::PostHogLogs(current) => {
-            let SinkConfig::PostHogLogs(previous) = previous else {
+        IntegrationConfig::PostHogLogs(current) => {
+            let IntegrationConfig::PostHogLogs(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::PostHogLogs {
@@ -220,8 +222,8 @@ pub fn audit_credential_changes(
                 host_changed: previous.host != current.host,
             }
         },
-        SinkConfig::PostHogErrorTracking(current) => {
-            let SinkConfig::PostHogErrorTracking(previous) = previous else {
+        IntegrationConfig::PostHogErrorTracking(current) => {
+            let IntegrationConfig::PostHogErrorTracking(previous) = previous else {
                 return None;
             };
             IntegrationAuditCredentialChanges::PostHogErrorTracking {
@@ -229,8 +231,8 @@ pub fn audit_credential_changes(
                 host_changed: previous.host != current.host,
             }
         },
-        SinkConfig::S3Export(current) => {
-            let SinkConfig::S3Export(previous) = previous else {
+        IntegrationConfig::S3Export(current) => {
+            let IntegrationConfig::S3Export(previous) = previous else {
                 return None;
             };
             let (access_key_id_changed, secret_access_key_changed, role_arn_changed) =
@@ -264,6 +266,6 @@ pub fn audit_credential_changes(
                 role_arn_changed,
             }
         },
-        SinkConfig::Local(_) => return None,
+        IntegrationConfig::Local(_) => return None,
     })
 }

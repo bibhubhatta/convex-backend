@@ -24,7 +24,7 @@ use common::{
     runtime::Runtime,
 };
 use http::header::CONTENT_TYPE;
-use model::log_sinks::types::datadog::DatadogConfig;
+use model::integrations::types::datadog::DatadogConfig;
 use parking_lot::Mutex;
 use reqwest::header::{
     HeaderMap,
@@ -40,21 +40,21 @@ use tokio::sync::mpsc;
 
 use crate::{
     consts,
-    metrics::datadog_sink_network_egress_bytes,
-    sinks::{
+    integrations::{
         failure::{
-            classify_sink_response,
-            SinkEgressFailure,
-            SinkFailureReporter,
+            classify_integration_response,
+            IntegrationEgressFailure,
+            IntegrationFailureReporter,
         },
         utils::{
             self,
             build_sized_batches,
             EgressCounter,
-            SinkFilter,
+            IntegrationFilter,
         },
     },
-    LogSinkClient,
+    metrics::datadog_integration_network_egress_bytes,
+    IntegrationClient,
     LoggingDeploymentMetadata,
 };
 
@@ -117,22 +117,22 @@ struct SerializedEvent {
     is_egress: bool,
 }
 
-pub(crate) struct DatadogSink<RT: Runtime> {
+pub(crate) struct DatadogIntegration<RT: Runtime> {
     runtime: RT,
     fetch_client: Arc<dyn FetchClient>,
     dd_url: reqwest::Url,
     dd_api_key: String,
     metadata: DatadogMetadata,
     log_event_format: LogEventFormatVersion,
-    filter: SinkFilter,
+    filter: IntegrationFilter,
     events_receiver: mpsc::Receiver<Vec<Arc<LogEvent>>>,
     backoff: Backoff,
     deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
     egress_counter: EgressCounter,
-    failure_reporter: SinkFailureReporter,
+    failure_reporter: IntegrationFailureReporter,
 }
 
-impl<RT: Runtime> DatadogSink<RT> {
+impl<RT: Runtime> DatadogIntegration<RT> {
     pub async fn start(
         runtime: RT,
         fetch_client: Arc<dyn FetchClient>,
@@ -140,11 +140,11 @@ impl<RT: Runtime> DatadogSink<RT> {
         subscribed_topics: Option<BTreeSet<LogTopic>>,
         deployment_metadata: Arc<Mutex<LoggingDeploymentMetadata>>,
         egress_counter: EgressCounter,
-        failure_reporter: SinkFailureReporter,
+        failure_reporter: IntegrationFailureReporter,
         should_verify: bool,
-    ) -> anyhow::Result<LogSinkClient> {
-        tracing::info!("Starting DatadogSink");
-        let (tx, rx) = mpsc::channel(consts::DD_SINK_EVENTS_BUFFER_SIZE);
+    ) -> anyhow::Result<IntegrationClient> {
+        tracing::info!("Starting DatadogIntegration");
+        let (tx, rx) = mpsc::channel(consts::DD_INTEGRATION_EVENTS_BUFFER_SIZE);
 
         let metadata = DatadogMetadata::new(
             config.dd_tags,
@@ -152,8 +152,8 @@ impl<RT: Runtime> DatadogSink<RT> {
             config.service,
         );
 
-        let filter = SinkFilter::for_version(config.version, subscribed_topics);
-        let mut sink = Self {
+        let filter = IntegrationFilter::for_version(config.version, subscribed_topics);
+        let mut integration = Self {
             runtime: runtime.clone(),
             dd_url: config.site_location.get_logging_endpoint()?,
             dd_api_key: config.dd_api_key.into_value(),
@@ -162,19 +162,24 @@ impl<RT: Runtime> DatadogSink<RT> {
             filter,
             events_receiver: rx,
             fetch_client,
-            backoff: Backoff::new(consts::DD_SINK_INITIAL_BACKOFF, consts::DD_SINK_MAX_BACKOFF),
+            backoff: Backoff::new(
+                consts::DD_INTEGRATION_INITIAL_BACKOFF,
+                consts::DD_INTEGRATION_MAX_BACKOFF,
+            ),
             deployment_metadata: deployment_metadata.clone(),
             egress_counter,
             failure_reporter,
         };
 
         if should_verify {
-            sink.verify_creds().await?;
-            tracing::info!("DatadogSink verified!");
+            integration.verify_creds().await?;
+            tracing::info!("DatadogIntegration verified!");
         }
 
-        let handle = Arc::new(Mutex::new(runtime.spawn("datadog_sink", sink.go())));
-        let client = LogSinkClient {
+        let handle = Arc::new(Mutex::new(
+            runtime.spawn("datadog_integration", integration.go()),
+        ));
+        let client = IntegrationClient {
             _handle: handle,
             events_sender: tx,
         };
@@ -186,7 +191,7 @@ impl<RT: Runtime> DatadogSink<RT> {
             match self.events_receiver.recv().await {
                 None => {
                     // The sender was closed, event loop should shutdown
-                    tracing::warn!("Stopping DatadogSink. Sender was closed.");
+                    tracing::warn!("Stopping DatadogIntegration. Sender was closed.");
                     return;
                 },
                 Some(ev) => {
@@ -239,7 +244,7 @@ impl<RT: Runtime> DatadogSink<RT> {
 
         // Make request in a loop that retries on transient errors
         let mut last_failure = None;
-        for _ in 0..consts::DD_SINK_MAX_REQUEST_ATTEMPTS {
+        for _ in 0..consts::DD_INTEGRATION_MAX_REQUEST_ATTEMPTS {
             let response = self
                 .fetch_client
                 .fetch(
@@ -258,21 +263,21 @@ impl<RT: Runtime> DatadogSink<RT> {
                 && let Ok(r) = &response
             {
                 let num_bytes_egress = r.request_size.load(Ordering::Relaxed);
-                utils::track_log_sink_bandwidth(
+                utils::track_integration_bandwidth(
                     num_bytes_egress,
                     &self.egress_counter,
-                    datadog_sink_network_egress_bytes,
+                    datadog_integration_network_egress_bytes,
                 );
             }
 
-            match classify_sink_response(response) {
+            match classify_integration_response(response) {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.is_rejected() => anyhow::bail!(failure),
                 Err(failure) => {
                     let delay = self.backoff.fail(&mut self.runtime.rng());
                     tracing::warn!(
-                        "Failed to send in Datadog sink: {failure}. Waiting {delay:?} before \
-                         retrying."
+                        "Failed to send in Datadog integration: {failure}. Waiting {delay:?} \
+                         before retrying."
                     );
                     last_failure = Some(failure);
                     self.runtime.wait(delay).await;
@@ -280,8 +285,8 @@ impl<RT: Runtime> DatadogSink<RT> {
             }
         }
 
-        anyhow::bail!(SinkEgressFailure::retries_exhausted(
-            consts::DD_SINK_MAX_REQUEST_ATTEMPTS,
+        anyhow::bail!(IntegrationEgressFailure::retries_exhausted(
+            consts::DD_INTEGRATION_MAX_REQUEST_ATTEMPTS,
             last_failure,
         ))
     }
@@ -295,7 +300,7 @@ impl<RT: Runtime> DatadogSink<RT> {
             LogEventFormatVersion::V1 => "1",
             LogEventFormatVersion::V2 => "2",
         };
-        crate::metrics::datadog_sink_logs_received(events.len(), log_event_format_version);
+        crate::metrics::datadog_integration_logs_received(events.len(), log_event_format_version);
 
         let mut serialized_events = vec![];
         let deployment_metadata = self.deployment_metadata.lock().clone();
@@ -321,8 +326,8 @@ impl<RT: Runtime> DatadogSink<RT> {
         let batches = build_sized_batches(
             &serialized_events,
             |ev| ev.json.get().len(),
-            consts::DD_SINK_MAX_LOGS_PER_BATCH,
-            consts::DD_SINK_MAX_BATCH_BYTES,
+            consts::DD_INTEGRATION_MAX_LOGS_PER_BATCH,
+            consts::DD_INTEGRATION_MAX_BATCH_BYTES,
         );
         for batch in batches {
             let track_egress = batch.iter().any(|ev| !ev.is_egress);
@@ -335,7 +340,10 @@ impl<RT: Runtime> DatadogSink<RT> {
                 .await
             {
                 Ok(()) => {
-                    crate::metrics::datadog_sink_logs_sent(batch.len(), log_event_format_version);
+                    crate::metrics::datadog_integration_logs_sent(
+                        batch.len(),
+                        log_event_format_version,
+                    );
                     self.backoff.reset();
                     self.failure_reporter.reset();
                 },

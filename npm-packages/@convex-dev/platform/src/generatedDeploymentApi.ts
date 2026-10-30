@@ -238,6 +238,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/{id}/rotate_webhook_secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate webhook integration secret
+         * @description Rotate the secret for the webhook integration.
+         */
+        post: operations["rotate_integration_webhook_secret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get integration
+         * @description Get the config for a specific integration by id.
+         */
+        get: operations["get_integration"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete integration
+         * @description Delete the deployment's integration with the given id.
+         */
+        delete: operations["delete_integration"];
+        options?: never;
+        head?: never;
+        /**
+         * Update integration
+         * @description Update an existing integration for the deployment. Omit a field to keep the
+         *     existing value, and use `null` to unset a field.
+         */
+        patch: operations["update_integration"];
+        trace?: never;
+    };
+    "/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List integrations
+         * @description List configs for all existing integrations in a deployment.
+         */
+        get: operations["list_integrations"];
+        put?: never;
+        /**
+         * Create integration
+         * @description Create a new integration for the deployment. Errors if a integration of the
+         *     given type already exists.
+         */
+        post: operations["create_integration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/list_log_streams": {
         parameters: {
             query?: never;
@@ -1666,6 +1740,136 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GetCanonicalUrlsResponse"];
+                };
+            };
+        };
+    };
+    rotate_integration_webhook_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description id of the webhook integration for which to rotate the secret */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotateLogStreamSecretResponse"];
+                };
+            };
+        };
+    };
+    get_integration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description id of the integration to retrieve */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogStreamConfig"];
+                };
+            };
+        };
+    };
+    delete_integration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description id of the integration to delete */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_integration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description id of the integration to update */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLogStreamArgs"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_integrations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogStreamConfig"][];
+                };
+            };
+        };
+    };
+    create_integration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLogStreamArgs"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateLogStreamResponse"];
                 };
             };
         };

@@ -14,7 +14,7 @@ use model::{
         types::BackendInfoPersisted,
         BackendInfoModel,
     },
-    log_sinks::LogSinksModel,
+    integrations::IntegrationsModel,
 };
 
 use crate::Application;
@@ -100,7 +100,7 @@ impl<RT: Runtime> Application<RT> {
             tracing::info!(
                 "Clearing _log_sinks table due to log streaming entitlement being disabled"
             );
-            LogSinksModel::new(&mut tx).clear().await?;
+            IntegrationsModel::new(&mut tx).clear().await?;
         }
         self.commit(tx, "write_backend_info").await?;
         Ok(())
