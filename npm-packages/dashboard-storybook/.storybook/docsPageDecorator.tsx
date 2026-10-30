@@ -18,6 +18,7 @@ import {
   useCurrentProjectWithStatus,
   usePaginatedProjects,
   useProjectById,
+  useTeamProjectTags,
 } from "../../dashboard/src/api/projects";
 import {
   useIsCurrentMemberTeamAdmin,
@@ -264,6 +265,7 @@ export const docsPageDecorator: DecoratorFunction<ReactRenderer> = (
   mocked(useTeamMembers).mockReturnValue(mockTeamMembers);
   mocked(useCurrentTeam).mockReturnValue(mockTeam);
   mocked(useIsCurrentMemberTeamAdmin).mockReturnValue(true);
+  mocked(useTeamProjectTags).mockReturnValue([]);
   mocked(usePaginatedProjects).mockReturnValue({
     items: [mockProject],
     pagination: {

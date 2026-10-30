@@ -1,7 +1,11 @@
 import { Meta, StoryObj } from "@storybook/nextjs";
+import { useState } from "react";
 import { mocked, screen, userEvent } from "storybook/test";
 import { useDirectorySyncOffers } from "api/directorySync";
 import { useTeams } from "api/teams";
+import { usePaginatedProjects, useTeamProjectTags } from "api/projects";
+import { useHasCustomRolePermission } from "api/roles";
+import { useProjectTagFilter } from "hooks/useProjectTagFilter";
 import { TeamIndexPage } from "../../pages/t/[team]";
 
 const meta = {
@@ -98,4 +102,90 @@ export const TeamSwitcherWithInvitation: Story = {
       return storyFn();
     },
   ],
+};
+
+// Stands in for `useProjectTagFilter`, whose URL updates the Storybook router
+// ignores, so picking tags in a story changes the selection.
+function fakeTagFilter(initialTags: string[]) {
+  return function useFakeTagFilter(): ReturnType<typeof useProjectTagFilter> {
+    return useState(initialTags);
+  };
+}
+
+const taggedProject = {
+  teamId: 2,
+  teamSlug: "acme",
+  createTime: new Date("2026-04-01T09:41:00Z").getTime(),
+  prodDeploymentName: "musical-otter-456",
+  devDeploymentName: "happy-capybara-123",
+};
+
+/**
+ * The project list filtered to the projects with one tag.
+ */
+export const FilteredByTag: Story = {
+  parameters: {
+    docsPage: { launchDarkly: { tagEditUi: true } },
+  },
+  decorators: [
+    (storyFn) => {
+      mocked(useProjectTagFilter).mockImplementation(
+        fakeTagFilter(["billing"]),
+      );
+      mocked(useTeamProjectTags).mockReturnValue([
+        "backend",
+        "billing",
+        "production",
+        "team-payments",
+      ]);
+      mocked(usePaginatedProjects).mockReturnValue({
+        items: [
+          {
+            ...taggedProject,
+            id: 8,
+            name: "Invoicing",
+            slug: "invoicing",
+            tags: ["billing"],
+          },
+          {
+            ...taggedProject,
+            id: 9,
+            name: "Payments worker",
+            slug: "payments-worker",
+            tags: ["backend", "billing", "team-payments"],
+          },
+        ],
+        pagination: { hasMore: false },
+        isLoading: false,
+      });
+      return storyFn();
+    },
+  ],
+};
+
+/**
+ * A custom-role member without `team:projectTags:view` gets the tag filter
+ * disabled.
+ */
+export const TagFilterWithoutPermission: Story = {
+  parameters: {
+    docsPage: { launchDarkly: { tagEditUi: true } },
+  },
+  decorators: [
+    (storyFn) => {
+      mocked(useHasCustomRolePermission).mockImplementation(
+        (_teamId, action) => action !== "team:projectTags:view",
+      );
+      return storyFn();
+    },
+  ],
+};
+
+/**
+ * The tag filter is disabled while none of the team's projects have tags.
+ */
+export const TagFilterWithoutTags: Story = {
+  parameters: {
+    docsPage: { launchDarkly: { tagEditUi: true } },
+  },
 };
