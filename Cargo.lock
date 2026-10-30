@@ -7031,9 +7031,9 @@ dependencies = [
 
 [[package]]
 name = "memmap2"
-version = "0.9.4"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe751422e4a8caa417e13c3ea66452215d7d63e19e604f4980461212f3ae1322"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
@@ -7044,7 +7044,7 @@ version = "0.0.0"
 source = "git+https://github.com/convex/qdrant?rev=a5d1b7bc9fd04861316b6455204c8a946d43117e#a5d1b7bc9fd04861316b6455204c8a946d43117e"
 dependencies = [
  "log",
- "memmap2 0.9.4",
+ "memmap2 0.9.11",
  "parking_lot",
  "serde",
 ]
@@ -10234,7 +10234,7 @@ dependencies = [
  "itertools 0.12.1",
  "log",
  "macro_rules_attribute",
- "memmap2 0.9.4",
+ "memmap2 0.9.11",
  "memory",
  "nom",
  "num-cmp",
@@ -10978,7 +10978,7 @@ source = "git+https://github.com/convex/qdrant?rev=a5d1b7bc9fd04861316b6455204c8
 dependencies = [
  "io",
  "itertools 0.12.1",
- "memmap2 0.9.4",
+ "memmap2 0.9.11",
  "memory",
  "ordered-float 4.2.0",
  "parking_lot",
