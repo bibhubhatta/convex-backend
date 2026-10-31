@@ -374,7 +374,10 @@ export const docsPageDecorator: DecoratorFunction<ReactRenderer> = (
   mocked(useCurrentDeployment).mockReturnValue(
     shouldMockCurrentDeployment ? activeDeployment : undefined,
   );
-  mocked(useDeploymentByName).mockReturnValue(undefined);
+  mocked(useDeploymentByName).mockReturnValue({
+    deployment: undefined,
+    notFound: false,
+  });
   mocked(useDeploymentRegions).mockReturnValue({
     regions: [
       {

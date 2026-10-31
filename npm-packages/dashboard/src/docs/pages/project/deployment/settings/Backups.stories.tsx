@@ -186,7 +186,10 @@ const meta = {
       });
       // Each list item resolves its backup identifier from the source
       // deployment name.
-      mocked(useDeploymentByName).mockReturnValue(mockDeployment);
+      mocked(useDeploymentByName).mockReturnValue({
+        deployment: mockDeployment,
+        notFound: false,
+      });
       mocked(useInfiniteProjects).mockReturnValue({
         projects: [mockProject],
         isLoading: false,

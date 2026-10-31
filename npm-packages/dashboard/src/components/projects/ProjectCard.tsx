@@ -3,8 +3,13 @@ import {
   GearIcon,
   LayersIcon,
   PlusIcon,
+  Pencil2Icon,
 } from "@radix-ui/react-icons";
-import { CommandLineIcon, SignalIcon } from "@heroicons/react/24/outline";
+import {
+  CommandLineIcon,
+  SignalIcon,
+  WrenchIcon,
+} from "@heroicons/react/24/outline";
 import { CardMenu, CardProps } from "elements/Card";
 import { Tooltip } from "@ui/Tooltip";
 import { Loading } from "@ui/Loading";
@@ -12,8 +17,15 @@ import { TimestampDistance } from "@common/elements/TimestampDistance";
 import { useDeploymentUris } from "hooks/useDeploymentUris";
 import { cn } from "@ui/cn";
 import Link from "next/link";
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { ProjectDetails } from "generatedApi";
+import { DeploymentType } from "@convex-dev/platform/managementApi";
+import { deploymentTypeLabel } from "@common/lib/deploymentTypeColorClasses";
+import {
+  LastViewedDeployment,
+  useLastViewedNonDefaultDeployment,
+} from "hooks/useLastViewed";
+import { useDeploymentByName } from "api/deployments";
 import {
   useHasCustomRolePermission,
   useHasProjectAdminPermissions,
@@ -27,6 +39,8 @@ import { permissionDeniedTip } from "elements/permissionDeniedTip";
 import { HighlightMatch } from "elements/HighlightMatch";
 import { DeleteProjectModal } from "./modals/DeleteProjectModal";
 import { ProjectTags } from "./ProjectTags";
+
+const TOOLTIP_DELAY_MS = 500;
 
 export function ProjectCard({
   project,
@@ -46,15 +60,54 @@ export function ProjectCard({
     prodHref,
     devHref,
     isProdDefault,
-    defaultHref,
     prodDeploymentName,
     devDeploymentName,
     prodDeploymentReference,
     devDeploymentReference,
     hasDefaultProdDeployment,
     hasDefaultDevDeployment,
+    generateHref,
     isLoading: isLoadingDeployments,
   } = useDeploymentUris(id, slug);
+
+  const [lastViewed, setLastViewed] = useLastViewedNonDefaultDeployment(id);
+  const suggested =
+    lastViewed &&
+    lastViewed.name !== prodDeploymentName &&
+    lastViewed.name !== devDeploymentName
+      ? lastViewed
+      : undefined;
+  // The pill shows the stored reference right away but only links to the
+  // deployment once Big Brain confirms the member can still open it.
+  const { deployment: fetchedDeployment, notFound } = useDeploymentByName(
+    suggested && !suggested.deleted ? suggested.name : undefined,
+  );
+
+  const suggestedDeployment =
+    fetchedDeployment?.name === suggested?.name ? fetchedDeployment : undefined;
+  useEffect(() => {
+    if (notFound && lastViewed && !lastViewed.deleted) {
+      setLastViewed({ ...lastViewed, deleted: true });
+    }
+  }, [notFound, lastViewed, setLastViewed]);
+  const recentDeployment: RecentDeployment | undefined = suggested && {
+    name: suggested.name,
+    reference:
+      suggestedDeployment?.kind === "cloud"
+        ? suggestedDeployment.reference
+        : suggested.reference,
+    deploymentType: suggested.deploymentType,
+    status:
+      suggested.deleted || notFound
+        ? "deleted"
+        : suggestedDeployment
+          ? "available"
+          : "loading",
+  };
+  const recentDeploymentHref =
+    recentDeployment?.status === "available"
+      ? generateHref(recentDeployment.name)
+      : undefined;
 
   const profile = useProfile();
 
@@ -71,6 +124,11 @@ export function ProjectCard({
   const showProvisionLinks = !isCustomRoleMember || hasAdminPermissions;
   const hasVisibleDefaultDeployment =
     hasDefaultProdDeployment || hasDefaultDevDeployment;
+  // Custom-role members who can't view either default deployment fall back to
+  // the deployments list scoped to this project, so they can still discover
+  // any deployments their role allows (e.g. preview).
+  const fallsBackToDeploymentsList =
+    !showProvisionLinks && !hasVisibleDefaultDeployment;
 
   const canDeleteCustom = useHasCustomRolePermission(
     team?.id,
@@ -108,12 +166,24 @@ export function ProjectCard({
     },
   ];
 
-  // Custom-role members who can't view either default deployment go to the
-  // deployments list scoped to this project, so they can still discover any
-  // deployments their role allows (e.g. preview).
-  const opensDeploymentsList =
-    !showProvisionLinks && !hasVisibleDefaultDeployment;
-  const cardHref = opensDeploymentsList ? deploymentsListHref : defaultHref;
+  const myDeploymentsHref =
+    profile &&
+    `${deploymentsListHref}&creator=${profile.id}&sort=createTime:desc`;
+
+  const cardTarget: CardTarget =
+    recentDeploymentHref !== undefined
+      ? "recent"
+      : fallsBackToDeploymentsList
+        ? "deployments"
+        : isProdDefault
+          ? "production"
+          : "development";
+  const cardHref = {
+    production: prodHref,
+    development: devHref,
+    recent: recentDeploymentHref,
+    deployments: deploymentsListHref,
+  }[cardTarget];
 
   const linkLabel = name?.length ? name : "Untitled Project";
   const href = deleteModal ? undefined : cardHref;
@@ -145,7 +215,7 @@ export function ProjectCard({
       <Loading className="h-6 w-56 rounded-md" fullHeight={false} />
     ) : (
       <DeploymentLinks
-        isProdDefault={isProdDefault}
+        defaultTarget={cardTarget}
         devHref={devHref}
         prodHref={prodHref}
         prodDeploymentName={prodDeploymentName}
@@ -153,9 +223,12 @@ export function ProjectCard({
         prodDeploymentReference={prodDeploymentReference}
         devDeploymentReference={devDeploymentReference}
         defaultDevReference={defaultDevDeploymentReference(profile)}
+        recentDeployment={recentDeployment}
+        recentDeploymentHref={recentDeploymentHref}
+        myDeploymentsHref={myDeploymentsHref}
         showProvisionLinks={showProvisionLinks}
         deploymentsListHref={
-          opensDeploymentsList ? deploymentsListHref : undefined
+          fallsBackToDeploymentsList ? deploymentsListHref : undefined
         }
       />
     );
@@ -165,6 +238,7 @@ export function ProjectCard({
       <TimestampDistance
         date={new Date(project.createTime)}
         className="truncate text-content-tertiary"
+        delayDuration={TOOLTIP_DELAY_MS}
         prefix="Created"
       />
     </div>
@@ -234,30 +308,36 @@ export function ProjectCard({
   );
 }
 
-// The card itself opens the default deployment (development when the member
-// has one, production otherwise). Hovering the card outlines that pill to show
-// where a click lands; hovering a specific pill outlines only that pill.
+// The card itself opens the link `cardTarget` picks. Hovering the card
+// outlines that pill to show where a click lands; hovering a specific pill
+// outlines only that pill.
 //
 // Pills are labeled with the deployment's reference. Local dev deployments have
 // none and read as "local"; any other deployment without one reads as the
-// reference it would be created with.
+// reference it would be created with. After them comes the member's most
+// recently viewed deployment that isn't one of those two, then an icon pill
+// that opens the deployments list filtered to the member's own deployments in
+// this project.
 //
 // A deployment that doesn't exist gets a pill linking to its provision page
-// only when `showProvisionLinks` is set. When the card opens the deployments
-// list instead, `deploymentsListHref` adds a leading pill for it.
+// only when `showProvisionLinks` is set. When the card falls back to the
+// deployments list, `deploymentsListHref` adds a leading pill for it.
 function DeploymentLinks({
   devHref,
   prodHref,
-  isProdDefault,
+  defaultTarget,
   prodDeploymentName,
   devDeploymentName,
   prodDeploymentReference,
   devDeploymentReference,
   defaultDevReference,
+  recentDeployment,
+  recentDeploymentHref,
+  myDeploymentsHref,
   showProvisionLinks,
   deploymentsListHref,
 }: {
-  isProdDefault: boolean;
+  defaultTarget: CardTarget;
   devHref: string;
   prodHref: string;
   prodDeploymentName: string | null;
@@ -265,6 +345,9 @@ function DeploymentLinks({
   prodDeploymentReference: string | null;
   devDeploymentReference: string | null;
   defaultDevReference: string;
+  recentDeployment: RecentDeployment | undefined;
+  recentDeploymentHref: string | undefined;
+  myDeploymentsHref: string | undefined;
   showProvisionLinks: boolean;
   deploymentsListHref?: string;
 }) {
@@ -274,7 +357,7 @@ function DeploymentLinks({
         <DeploymentPill
           href={deploymentsListHref}
           label="Deployments"
-          isDefault
+          isDefault={defaultTarget === "deployments"}
           icon={<LayersIcon />}
         />
       )}
@@ -282,14 +365,9 @@ function DeploymentLinks({
         <DeploymentPill
           href={prodHref}
           label={prodDeploymentReference ?? "production"}
-          isDefault={isProdDefault}
+          isDefault={defaultTarget === "production"}
           exists={prodDeploymentName !== null}
-          icon={
-            <SignalIcon
-              strokeWidth={2}
-              className="text-purple-500 dark:text-purple-200"
-            />
-          }
+          icon={<DeploymentTypeIcon deploymentType="prod" />}
           tip={
             prodDeploymentName === null
               ? "Add a new production deployment"
@@ -306,14 +384,9 @@ function DeploymentLinks({
               ? "local"
               : defaultDevReference)
           }
-          isDefault={!isProdDefault}
+          isDefault={defaultTarget === "development"}
           exists={devDeploymentName !== null}
-          icon={
-            <CommandLineIcon
-              strokeWidth={2}
-              className="text-green-700 dark:text-green-500"
-            />
-          }
+          icon={<DeploymentTypeIcon deploymentType="dev" />}
           tip={
             devDeploymentName === null
               ? "Add a new personal dev deployment"
@@ -321,8 +394,70 @@ function DeploymentLinks({
           }
         />
       )}
+      {recentDeployment && (
+        <DeploymentPill
+          href={recentDeploymentHref}
+          label={recentDeployment.reference}
+          isDefault={defaultTarget === "recent"}
+          icon={
+            <DeploymentTypeIcon
+              deploymentType={recentDeployment.deploymentType}
+            />
+          }
+          tip={
+            recentDeployment.status === "deleted"
+              ? "This deployment was deleted, or you no longer have access to it"
+              : `${deploymentTypeLabel(recentDeployment.deploymentType)} · ${recentDeployment.name}`
+          }
+        />
+      )}
+      <DeploymentPill
+        href={myDeploymentsHref}
+        label="Your deployments"
+        iconOnly
+        icon={<LayersIcon />}
+        tip="Your deployments"
+      />
     </div>
   );
+}
+
+type RecentDeployment = LastViewedDeployment & {
+  status: "loading" | "available" | "deleted";
+};
+
+type CardTarget = "production" | "development" | "recent" | "deployments";
+
+// The same icon per type as the deployment switcher in the header.
+function DeploymentTypeIcon({
+  deploymentType,
+}: {
+  deploymentType: DeploymentType;
+}) {
+  switch (deploymentType) {
+    case "prod":
+      return (
+        <SignalIcon
+          strokeWidth={2}
+          className="text-purple-500 dark:text-purple-200"
+        />
+      );
+    case "dev":
+      return (
+        <CommandLineIcon
+          strokeWidth={2}
+          className="text-green-700 dark:text-green-500"
+        />
+      );
+    case "preview":
+      return <Pencil2Icon className="text-orange-600 dark:text-orange-400" />;
+    case "custom":
+      return <WrenchIcon strokeWidth={2} className="text-content-secondary" />;
+    default: {
+      deploymentType satisfies never;
+      return null;
+    }
+  }
 }
 
 function DeploymentPill({
@@ -331,43 +466,73 @@ function DeploymentPill({
   icon,
   isDefault = false,
   exists = true,
+  iconOnly = false,
   tip,
 }: {
-  href: string;
+  href?: string;
   label: string;
   // Sized by the pill; replaced by a "+" when the deployment doesn't exist.
   icon: ReactNode;
   isDefault?: boolean;
   exists?: boolean;
+  iconOnly?: boolean;
   tip?: ReactNode;
 }) {
-  const link = (
-    <Link
-      href={href}
-      data-deployment-pill
-      className={cn(
-        "relative z-10 inline-flex h-6 max-w-48 min-w-0 items-center gap-1.5 rounded-md border bg-background-secondary px-2 text-xs font-medium whitespace-nowrap text-content-primary transition-colors hover:border-border-selected focus-visible:ring-2 focus-visible:ring-border-selected focus-visible:outline-none",
-        !exists && "border-dashed text-content-secondary",
-        isDefault &&
-          "group-hover:border-border-selected group-has-[[data-deployment-pill]:hover]:border-border-transparent hover:border-border-selected!",
-      )}
-    >
+  const className = cn(
+    "relative z-10 inline-flex h-6 min-w-0 items-center gap-1.5 rounded-md border bg-background-secondary px-2 text-xs font-medium whitespace-nowrap text-content-primary transition-colors hover:border-border-selected focus-visible:ring-2 focus-visible:ring-border-selected focus-visible:outline-none",
+    !exists && "border-dashed text-content-secondary",
+    iconOnly
+      ? "w-6 shrink-0 justify-center px-0 text-content-secondary hover:text-content-primary"
+      : "max-w-max flex-1 basis-0",
+    isDefault &&
+      "group-hover:border-border-selected group-has-[[data-deployment-pill]:hover]:border-border-transparent hover:border-border-selected!",
+    href === undefined &&
+      "cursor-not-allowed text-content-secondary hover:border-border-transparent",
+  );
+  const content = (
+    <>
       <span
         aria-hidden
-        className="-ml-0.5 flex size-3.5 shrink-0 items-center justify-center [&>svg]:size-full"
+        className={cn(
+          "flex size-3.5 shrink-0 items-center justify-center [&>svg]:size-full",
+          !iconOnly && "-ml-0.5",
+        )}
       >
         {exists ? icon : <PlusIcon />}
       </span>
       {/* Labels are mostly lowercase references, and Inter's x-height sits
           below the line box's center, so nudge them up to center on the icon. */}
-      <span className="translate-y-[-0.5px] truncate">{label}</span>
-    </Link>
+      {!iconOnly && (
+        <span className="max-w-40 translate-y-[-0.5px] truncate">{label}</span>
+      )}
+    </>
   );
+  const link =
+    href === undefined ? (
+      <span
+        role="link"
+        aria-disabled
+        // Focusable so keyboard users can reach the tooltip saying why.
+        tabIndex={0}
+        data-deployment-pill
+        aria-label={iconOnly ? label : undefined}
+        className={className}
+      >
+        {content}
+      </span>
+    ) : (
+      <Link
+        href={href}
+        data-deployment-pill
+        aria-label={iconOnly ? label : undefined}
+        className={className}
+      >
+        {content}
+      </Link>
+    );
 
-  // Tooltips only add detail the pill already implies, so they wait rather
-  // than flash open as the pointer crosses the card.
   return tip ? (
-    <Tooltip tip={tip} delayDuration={500} asChild>
+    <Tooltip tip={tip} delayDuration={TOOLTIP_DELAY_MS} asChild>
       {link}
     </Tooltip>
   ) : (

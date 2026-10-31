@@ -113,15 +113,21 @@ export function useDeploymentRegions(teamId: number | undefined) {
   return { regions: data?.items, isLoading };
 }
 
+/**
+ * `notFound` is set when Big Brain says the deployment doesn't exist: it was
+ * deleted, or the member can't view it (Big Brain answers both the same way).
+ */
 export function useDeploymentByName(deploymentName?: string) {
-  const { data: deployment } = useManagementApiQuery({
+  const { data: deployment, error } = useManagementApiQuery({
     path: "/deployments/{deployment_name}",
     pathParams: {
       deployment_name: deploymentName || "",
     },
   });
 
-  return deployment;
+  const notFound =
+    (error as { code?: string } | undefined)?.code === "DeploymentNotFound";
+  return { deployment, notFound };
 }
 
 export function useDeleteDeployment(

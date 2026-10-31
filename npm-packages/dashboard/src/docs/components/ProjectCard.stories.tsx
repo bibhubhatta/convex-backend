@@ -1,8 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/nextjs";
 import { TeamResponse } from "generatedApi";
-import { ProjectResponse } from "@convex-dev/platform/managementApi";
+import {
+  PlatformDeploymentResponse,
+  ProjectResponse,
+} from "@convex-dev/platform/managementApi";
 import { ProjectCard } from "components/projects/ProjectCard";
 import { useProjectById } from "api/projects";
+import { useDeploymentByName } from "api/deployments";
 import { useCurrentTeam } from "api/teams";
 import { useProfile } from "api/profile";
 import { useHasProjectAdminPermissions } from "api/roles";
@@ -45,6 +49,10 @@ const meta = {
       isLoading: false,
       error: undefined,
     });
+    mocked(useDeploymentByName).mockReturnValue({
+      deployment: undefined,
+      notFound: false,
+    });
     mocked(useHasProjectAdminPermissions).mockReturnValue(true);
     mocked(useProfile).mockReturnValue({
       id: 1,
@@ -68,6 +76,40 @@ export const Default: Story = {
     await userEvent.click(
       canvas.getByRole("button", { name: "Open project settings" }),
     );
+  },
+};
+
+const previewDeployment: PlatformDeploymentResponse = {
+  kind: "cloud",
+  id: 321,
+  name: "quiet-heron-321",
+  createTime: Date.now(),
+  deploymentType: "preview",
+  projectId: project.id,
+  region: "aws-us-east-1",
+  isDefault: false,
+  reference: "preview/fix-login-redirect",
+  previewIdentifier: "fix-login-redirect",
+  deploymentUrl: "https://quiet-heron-321.convex.cloud",
+  class: "s16",
+};
+
+export const WithRecentDeployment: Story = {
+  beforeEach: () => {
+    mocked(useDeploymentByName).mockReturnValue({
+      deployment: previewDeployment,
+      notFound: false,
+    });
+    const key = `/lastViewedNonDefaultDeploymentForProject/${project.id}`;
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        name: previewDeployment.name,
+        reference: previewDeployment.reference,
+        deploymentType: previewDeployment.deploymentType,
+      }),
+    );
+    return () => window.localStorage.removeItem(key);
   },
 };
 
