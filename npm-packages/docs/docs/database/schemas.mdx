@@ -9,6 +9,7 @@ toc_max_heading_level: 4
 
 import Schema from "!!raw-loader!@site/../demos/users-and-auth/convex/schema.ts";
 import circularExample from "!!raw-loader!@site/../private-demos/snippets/convex/schemasCircular.ts";
+import jobsSchema from "!!raw-loader!@site/../private-demos/component-args/jobs/schema.ts";
 
 A schema is a description of
 
@@ -202,6 +203,19 @@ defineTable({
 ```
 
 This corresponds to the `any` type in TypeScript.
+
+#### Function handles
+
+[Function handles](/components/authoring.mdx#function-handles) can be stored in
+fields validated with `v.function()`:
+
+<Snippet source={jobsSchema} snippet="table" title="jobs/schema.ts" />
+
+Schema validation only checks that the value is a well-formed function handle
+string. `fnType`, `args`, and `returns` are used for TypeScript typechecking and
+codegen but aren't checked when a document is written, and changing them will
+not revalidate existing stored function handles. A stored handle might also
+point to a function that no longer exists.
 
 ### Options
 

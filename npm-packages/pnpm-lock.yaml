@@ -3531,6 +3531,19 @@ importers:
         specifier: ~5.0.3
         version: 5.0.4
 
+  private-demos/component-args:
+    dependencies:
+      convex:
+        specifier: workspace:*
+        version: link:../../convex
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.1
+      typescript:
+        specifier: ~5.0.3
+        version: 5.0.4
+
   private-demos/components-api-import:
     dependencies:
       '@convex-dev/ratelimiter':
@@ -4282,7 +4295,7 @@ importers:
     devDependencies:
       '@types/bun':
         specifier: latest
-        version: 1.4.3
+        version: 1.4.4
 
   private-demos/quickstarts/expo:
     dependencies:
@@ -15207,8 +15220,8 @@ packages:
   '@types/bonjour@3.5.13':
     resolution: {integrity: sha512-z9fJ5Im06zvUL548KvYNecEVlA7cVDkGUi6kZusb04mpyEFKCIZJvloCcmpmLaIahDpOQGHaHmG6imtPMmPXGQ==}
 
-  '@types/bun@1.4.3':
-    resolution: {integrity: sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw==}
+  '@types/bun@1.4.4':
+    resolution: {integrity: sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ==}
 
   '@types/chai-as-promised@8.0.2':
     resolution: {integrity: sha512-meQ1wDr1K5KRCSvG2lX7n7/5wf70BeptTKst0axGvnN6zqaVpRqegoIbugiAPSqOW9K9aL8gDVrm7a2LXOtn2Q==}
@@ -17499,8 +17512,8 @@ packages:
   builtin-status-codes@3.0.0:
     resolution: {integrity: sha512-HpGFw18DgFWlncDfjTa2rcQ4W88O1mC8e8yZ2AvQY5KDaktSTwo+KRf6nHK6FRI5FyRyb/5T6+TSxfP7QyGsmQ==}
 
-  bun-types@1.4.3:
-    resolution: {integrity: sha512-tinRJNGOmUN+tEAsn2y2e942n9JHRHR42iUYzDH75NmhJqVBokGSQkkfSFdNWwsANIdrK6ACH9t01M452YyTwg==}
+  bun-types@1.4.4:
+    resolution: {integrity: sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ==}
 
   bundle-name@4.1.0:
     resolution: {integrity: sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q==}
@@ -30440,7 +30453,7 @@ snapshots:
   '@azure/msal-node@3.8.2':
     dependencies:
       '@azure/msal-common': 15.13.1
-      jsonwebtoken: 9.0.2
+      jsonwebtoken: 9.0.3
       uuid: 8.3.2
 
   '@azure/storage-blob@12.26.0(supports-color@10.2.2)':
@@ -41059,9 +41072,9 @@ snapshots:
     dependencies:
       '@types/node': 22.19.1
 
-  '@types/bun@1.4.3':
+  '@types/bun@1.4.4':
     dependencies:
-      bun-types: 1.4.3
+      bun-types: 1.4.4
 
   '@types/chai-as-promised@8.0.2':
     dependencies:
@@ -44629,7 +44642,7 @@ snapshots:
 
   builtin-status-codes@3.0.0: {}
 
-  bun-types@1.4.3:
+  bun-types@1.4.4:
     dependencies:
       '@types/node': 22.19.1
       undici-types: 6.21.0

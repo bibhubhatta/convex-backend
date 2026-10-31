@@ -5,6 +5,10 @@ sidebar_position: 40
 description: "Creating new components"
 ---
 
+import jobsSchema from "!!raw-loader!@site/../private-demos/component-args/jobs/schema.ts";
+import jobsLib from "!!raw-loader!@site/../private-demos/component-args/jobs/lib.ts";
+import appJobs from "!!raw-loader!@site/../private-demos/component-args/convex/jobs.ts";
+
 Building a Convex Component lets you package up Convex functions, schemas, and
 persistent state into a reusable module that you or other developers can drop
 into their projects.
@@ -196,6 +200,10 @@ However, a `v.id("users")` within the component is not the same as
 can have a different table number representation.
 
 For this reason, all `Id` types in the `ComponentApi` become simple strings.
+
+Function handles validated with `v.function()` keep their signature in the
+`ComponentApi`, since a handle can be called from anywhere. See
+[Function Handles](#function-handles).
 
 ### Generated code
 
@@ -417,22 +425,39 @@ it into something that can be called from anywhere:
 const handle = await createFunctionHandle(api.foo.bar);
 ```
 
-This handle is a string.
+This handle is a string branded with the `FunctionReference` type, and you can
+use it as you would use a function reference. Argument and return value
+validation still run at runtime, so don't worry about losing guarantees.
 
-Since it’s a string, you can pass it between functions and even store it in a
-table. You would use `v.string()` in args/schema validators.
+<Snippet source={jobsLib} snippet="callHandle" title="jobs/lib.ts" />
 
-When you want to use it, cast it back to FunctionHandle and use it as you would
-use a function reference. Note argument and return value validation still run at
-runtime, so don't worry about losing guarantees.
+You can use the `v.function()` validator to validate that a value is a
+well-formed function handle:
 
-```ts
-const handle = handleString as FunctionHandle<"mutation">;
+<Snippet source={jobsSchema} snippet="hooks" title="jobs/schema.ts" />
 
-const result = await ctx.runMutation(handle, args);
-// or run it asynchronously via the scheduler:
-await ctx.scheduler.runAfter(0, handle, args);
-```
+<Snippet source={jobsLib} snippet="hookFunctions" title="jobs/lib.ts" />
+
+You can describe the signature of the function for `v.function()` to use in
+typechecking and codegen. At runtime, `v.function()` only checks that the value
+is a well-formed function handle, not that the function exists or matches the
+signature.
+
+<Snippet source={jobsLib} snippet="enqueue" title="jobs/lib.ts" />
+
+The specified signature will appear in the component's generated `ComponentApi`.
+This can be convenient for typechecking user-provided callbacks, as users will
+get a type error if they pass a handle to the wrong kind of function:
+
+<Snippet source={appJobs} snippet="start" title="convex/jobs.ts" />
+
+The inferred type of a `v.function()` value is `FunctionHandle_future`, which is
+a function handle that has the semantics of
+[`FunctionReference_future`](/api/modules/server#functionreference_future).
+`FunctionHandle` is assignable to `FunctionHandle_future`, but
+`FunctionHandle_future` is not assignable to `FunctionHandle`, so helper
+functions that accept function handles should use the `FunctionHandle_future`
+type.
 
 [Here](https://github.com/convex/workpool/blob/aebe2db49fc3ec50ded6892ed27f464450b3d31e/src/component/worker.ts#L26-L28)
 is an example of using function handles in the
